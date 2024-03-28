@@ -1,0 +1,6 @@
+# drvlist
+
+A small FreeBSD tool to enumerate installed drives in a system
+and display the most useful information in one go.
+
+Author: Peter Eriksson <pen@lysator.liu.se>
