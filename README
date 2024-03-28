@@ -4,3 +4,19 @@ A small FreeBSD tool to enumerate installed drives in a system
 and display the most useful information in one go.
 
 Author: Peter Eriksson <pen@lysator.liu.se>
+
+Some sample output:
+
+# ./drvlist -v
+IDENT                    : VENDOR   : PRODUCT          : REV.     : NAMES     : PATH
+001A4D5D52A8B1C0F9607039 : Kingston : DataTraveler 3.0 : PMAP     : da27      : umass-sim0 bus 0 target 0 lun 0
+18411F982952             : ATA      : MK000480GWUGF    : HPG0     : da1       : ciss0 bus 32 target 1 lun 0
+2JKLNMEB                 : WDC      : WUH721818AL5204  : C870     : da4       : mpr0 bus 0 target 4 lun 0
+6TGTKYDC                 : WDC      : WUH721818AL5204  : C870     : da34,da10 : mpr1 bus 0 target 59 lun 0,mpr1 bus 0 target 16 lun 0
+73P4GPLC0086S51RRA00     : PLDS     : DVD+-RW DH-16AES : DD1M     : cd0       : ahcich4 bus 0 target 0 lun 0
+7PJSZTNC                 : HGST     : HUH721010AL4200  : LS21     : da0       : mpr0 bus 0 target 8 lun 0
+CVCQ726400DK400AGN       : INTEL    : SSDPEDMW400G4    : 8EV10171 : nda0      : nvme0 bus 0 target 0 lun 1
+CVCQ72640068400AGN       : INTEL    : SSDPEDMW400G4    : 8EV10171 : nvd0      : nvme0
+PHDW724401MA150A         : ATA      : SSDSCKJB120G7R   : N201DL42 : ada1      : ahcich15 bus 0 target 0 lun 0
+WBN00MZL                 : SEAGATE  : ST1800MM0159     : ST7B     : da74      : mpr1 bus 0 target 10 lun 0
+
