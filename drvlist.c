@@ -39,6 +39,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <math.h>
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/ioctl.h>
@@ -75,6 +76,13 @@ dv_sort_ident(const void *a, const void *b) {
     const DISK *da = (const DISK *) a;
     const DISK *db = (const DISK *) b;
     return strcmp(da->ident, db->ident);
+}
+
+static int
+dv_sort_physpath(const void *a, const void *b) {
+    const DISK *da = (const DISK *) a;
+    const DISK *db = (const DISK *) b;
+    return strcmp(da->physpath, db->physpath);
 }
 
 
@@ -318,7 +326,7 @@ main(int argc,
     int revisionlen = 4;
     int danameslen = 5;
     int physpathlen = 4;
-    
+    int numlen = 1;
 
     dv = malloc((ds = 1024)*sizeof(DISK));
     
@@ -390,7 +398,7 @@ main(int argc,
 		;
 	    dp = &dv[i];
 	    
-	    sprintf(pnbuf, "%s%u bus %u target %u lun %jx",
+	    sprintf(pnbuf, "%s%u bus %2u target %3u lun %2jx",
 		    cam->sim_name, cam->sim_unit_number,
 		    cam->bus_id,
 		    cam->target_id,
@@ -490,14 +498,16 @@ main(int argc,
 	strtrim(dv[i].physpath, &physpathlen);
     }
 
-    qsort(&dv[0], dc, sizeof(dv[0]), dv_sort_ident);
+    numlen = (int) (log10(dc)+1);
+    qsort(&dv[0], dc, sizeof(dv[0]), dv_sort_physpath);
 
     if (isatty(1)) {
-	printf("\033[1;4m%-*s : %-*s : %-*s : %-*s : %-*s",
-	       identlen, "IDENT",
+	printf("\033[1;4m%*s : %-*s : %-*s : %-*s : %-*s : %-*s",
+	       numlen, "#",
 	       vendorlen, "VENDOR",
 	       productlen, "PRODUCT",
 	       revisionlen, "REV.",
+	       identlen, "IDENT",
 	       danameslen, "NAMES");
 	if (f_verbose) {
 	    printf(" : %-*s",
@@ -507,11 +517,12 @@ main(int argc,
     }
 
     for (i = 0; i < dc; i++) {
-	printf("%-*s : %-*s : %-*s : %-*s : %-*s",
-	       identlen, dv[i].ident,
+	printf("%*u : %-*s : %-*s : %-*s : %-*s : %-*s",
+	       numlen, i+1,
 	       vendorlen, dv[i].vendor,
 	       productlen, dv[i].product,
 	       revisionlen, dv[i].revision,
+	       identlen, dv[i].ident,
 	       danameslen, dv[i].danames);
 	if (f_verbose) {
 	    printf(" : %s",
