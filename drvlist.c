@@ -111,8 +111,12 @@ strdupcat(char **old,
     size_t olen = 0;
     size_t alen = 0;
     
-    if (*old)
+    if (*old) {
+	if (strcmp(*old, add) == 0)
+	    return 0;
+	
 	olen += strlen(*old);
+    }
     
     if (olen > 0)
 	++alen;
@@ -290,9 +294,12 @@ nvme_identify(int fd,
     DISK *dp;
     char *cp;
     int i, j;
+    char pbuf[MAXPATHLEN];
     
     
     memset(&pt, 0, sizeof(pt));
+    memset(&cdata, 0, sizeof(cdata));
+    
     pt.cmd.opc = NVME_OPC_IDENTIFY;
     pt.cmd.cdw10 = htole32(1);
     pt.buf = &cdata;
@@ -333,11 +340,21 @@ nvme_identify(int fd,
 		    ++cp;
 	    dp->product = strdup(cp);
 	}
+
+	if (!pnbuf) {
+	    sprintf(pbuf, "pci vendor 0x%04x:0x%04x oui %02x:%02x:%02x controller 0x%04x",
+		    cdata.vid, cdata.ssvid,
+		    cdata.ieee[0], cdata.ieee[1], cdata.ieee[2],
+		    cdata.ctrlr_id);
+	    pnbuf = pbuf;
+	}
+
 	dp->revision = strndup(((const char*)cdata.fr), NVME_FIRMWARE_REVISION_LENGTH);
 	dp->ident = ident;
 	dp->danames = strdup(daname);
 	dp->driver = strdup(driver);
 	dp->path = strdup(pnbuf);
+	dp->phys = NULL;
 	++dc;
 	return 1;
     }
@@ -434,6 +451,7 @@ do_device(char *daname) {
 	    
 	    fd = open(path, O_RDONLY);
 	    nvme_identify(fd, daname, drvbuf, pnbuf);
+	    free(ident);
 	    close(fd);
 	} else {
 	    if (sscanf(daname, "ada%u", &id) == 1) {
@@ -441,6 +459,7 @@ do_device(char *daname) {
 	    }
 	    if (i >= dc) {
 		dp->ident = ident;
+		
 		
 		if (!dp->vendor && cam->inq_data.vendor[0])
 		    dp->vendor = strndup(cam->inq_data.vendor, sizeof(cam->inq_data.vendor));
@@ -453,8 +472,10 @@ do_device(char *daname) {
 		dp->phys = strdup(physbuf);
 		dp->driver = strdup(drvbuf);
 		dp->path = strdup(pnbuf);
+		dp->phys = strdup(physbuf);
 		dc++;
 	    } else {
+		free(ident);
 		strdupcat(&dp->danames, daname);
 		strdupcat(&dp->path, pnbuf);
 		strdupcat(&dp->driver, drvbuf);
@@ -464,7 +485,7 @@ do_device(char *daname) {
 	cam_close_device(cam);
 	return 0;
     }
-    
+
     if (sscanf(daname, "nvd%d", &id) == 1)
 	sprintf(path+5, "nvme%d", id);
     
@@ -475,29 +496,20 @@ do_device(char *daname) {
 	return -1;
     
     if (strncmp(daname, "nvd", 3) == 0) {
-	nvme_identify(fd, daname, path+5, "");
+	nvme_identify(fd, daname, path+5, NULL);
 	close(fd);
 	return 0;
     }
-    
+
     memset(idbuf, 0, sizeof(idbuf));
     if (ioctl(fd, DIOCGIDENT, idbuf) >= 0)
 	ident = strndup(idbuf, sizeof(idbuf));
     
     if (!ident) {
-#if 0
-	fprintf(stderr, "%s: Error: %s: Unable to get serial number: %s\n",
-		argv[0], daname, strerror(errno));
-#endif
 	close(fd);
 	return 1;
     }
 
-#if 0
-    if (ioctl(fd, DIOCGPROVIDERNAME, pnbuf) >= 0) {
-	fprintf(stderr, "** Provider: %s\n", pnbuf);
-    }
-#endif
     physbuf[0] = '\0';
     if (f_phys)
 	(void) ioctl(fd, DIOCGPHYSPATH, physbuf);
@@ -512,6 +524,7 @@ do_device(char *daname) {
 	dp->phys = strdup(physbuf);
 	++dc;
     } else {
+	free(ident);
 	strdupcat(&dp->danames, daname);
     }
     
@@ -524,7 +537,7 @@ int
 main(int argc,
      char *argv[]) {
     char *daname;
-    char *buf = NULL;
+    char *buf, *bp;
     size_t bsize = 0;
     int i, j;
     int rc = 0;
@@ -538,13 +551,19 @@ main(int argc,
     int physlen = 4;
     int numlen = 1;
 
-    dv = malloc((ds = 1024)*sizeof(DISK));
+    
+    dv = calloc((ds = 1024), sizeof(DISK));
+    if (!dv) {
+	fprintf(stderr, "%s: Error: calloc: %s\n",
+		argv[0], strerror(errno));
+	exit(1);
+    }
     
     for (i = 1; i < argc && argv[i][0] == '-'; i++) {
 	for (j = 1; argv[i][j]; j++)
 	    switch (argv[i][j]) {
 	    case 'h':
-		printf("Usage: %s [-v] [-S<sort>] [<devices>]\n", argv[0]);
+		printf("Usage: %s [-v] [-p] [-S<sort>] [<devices>]\n", argv[0]);
 		exit(0);
 	    case 'S':
 		if (argv[i][j+1])
@@ -573,26 +592,28 @@ main(int argc,
     NextArg:;
     }
 
-    if (sysctlbyname("kern.disks", NULL, &bsize, NULL, 0) < 0) {
-	fprintf(stderr, "%s: Error: Unable to list of drives from kernel: %s\n",
-		argv[0], strerror(errno));
-	exit(1);
-    }
-
-    buf = malloc(bsize);
-    if (!buf) {
-	fprintf(stderr, "%s: Error: %lu: Memory allocation failure: %s\n",
-		argv[0], bsize, strerror(errno));
-	exit(1);
-    }
-
     if (i >= argc) {
+	if (sysctlbyname("kern.disks", NULL, &bsize, NULL, 0) < 0) {
+	    fprintf(stderr, "%s: Error: Unable to list of drives from kernel: %s\n",
+		    argv[0], strerror(errno));
+	    exit(1);
+	}
+
+	buf = malloc(bsize);
+	if (!buf) {
+	    fprintf(stderr, "%s: Error: %lu: Memory allocation failure: %s\n",
+		    argv[0], bsize, strerror(errno));
+	    exit(1);
+	}
+
 	if (sysctlbyname("kern.disks", buf, &bsize, NULL, 0) < 0) {
 	    fprintf(stderr, "%s: Error: Unable to get list of drives from kernel: %s\n",
 		    argv[0], strerror(errno));
 	    exit(1);
 	}
-	while ((daname = strsep(&buf, " ")) != NULL) {
+
+	bp = buf;
+	while ((daname = strsep(&bp, " ")) != NULL) {
 	    rc = do_device(daname);
 	    if (rc < 0) {
 		fprintf(stderr, "%s: Error: %s: Unable to access: %s\n", argv[0], daname, strerror(errno));
@@ -601,6 +622,8 @@ main(int argc,
 		fprintf(stderr, "%s: Error: %s: Skipped\n", argv[0], daname);
 	    }
 	}
+
+	free(buf);
     } else {
 	for (; i < argc; i++) {
 	    rc = do_device(argv[i]);
@@ -646,7 +669,7 @@ main(int argc,
 	}
 	if (f_verbose) {
 	    printf(" : %-*s : %-*s",
-		   drvlen, "DRV",
+		   drvlen, "DRV.",
 		   pathlen, "PATH");
 	}
 	puts("\033[0m");
@@ -655,14 +678,14 @@ main(int argc,
     for (i = 0; i < dc; i++) {
 	printf("%*u : %-*s : %-*s : %-*s : %-*s : %-*s",
 	       numlen, i+1,
-	       vendorlen, dv[i].vendor,
-	       productlen, dv[i].product,
-	       revisionlen, dv[i].revision,
+	       vendorlen, dv[i].vendor ? dv[i].vendor : "?",
+	       productlen, dv[i].product ? dv[i].product : "?",
+	       revisionlen, dv[i].revision ? dv[i].revision : "?",
 	       identlen, dv[i].ident,
 	       danameslen, dv[i].danames);
 	if (f_phys) {
 	    printf(" : %.*s",
-		   physlen, dv[i].phys);
+		   physlen, dv[i].phys ? dv[i].phys : "");
 	}
 	if (f_verbose) {
 	    printf(" : %-*s : ",
