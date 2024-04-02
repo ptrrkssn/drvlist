@@ -54,6 +54,11 @@
 
 
 int f_verbose = 0;
+int f_debug = 0;
+int f_phys = 0;
+
+char *f_sort = NULL;
+
 
 typedef struct {
     char *ident;
@@ -61,7 +66,9 @@ typedef struct {
     char *vendor;
     char *product;
     char *revision;
-    char *physpath;
+    char *driver;
+    char *path;
+    char *phys;
 } DISK;
 
 #define MAXDISK 2048
@@ -72,17 +79,29 @@ DISK *dv;
 
 
 static int
-dv_sort_ident(const void *a, const void *b) {
-    const DISK *da = (const DISK *) a;
-    const DISK *db = (const DISK *) b;
+dv_sort_ident(const DISK *da, const DISK *db) {
     return strcmp(da->ident, db->ident);
 }
 
 static int
-dv_sort_physpath(const void *a, const void *b) {
-    const DISK *da = (const DISK *) a;
-    const DISK *db = (const DISK *) b;
-    return strcmp(da->physpath, db->physpath);
+dv_sort_devpath(const DISK *da, const DISK *db) {
+    int d;
+
+    d = strcmp(da->driver, db->driver);
+    if (d)
+	return d;
+    
+    return strcmp(da->path, db->path);
+}
+
+static int
+dv_sort(const void *a, const void *b) {
+    if (f_sort) {
+	if (strcmp(f_sort, "ident") == 0)
+	    return dv_sort_ident((const DISK *) a, (const DISK *) b);
+    }
+    
+    return dv_sort_devpath((const DISK *) a, (const DISK *) b);
 }
 
 
@@ -99,20 +118,35 @@ strdupcat(char **old,
 	++alen;
     alen += strlen(add);
 
-    *old = realloc(*old, olen+alen+1);
-    if (!*old)
-	return NULL;
+    if (*old && strcmp(*old, add) > 0) {
+	char *new = malloc(olen+alen+1);
+	if (!new)
+	    return NULL;
+	strcpy(new, add);
+	strcat(new, ",");
+	strcat(new, *old);
+	free(*old);
+	*old = new;
+    } else {
+	*old = realloc(*old, olen+alen+1);
+	if (!*old)
+	    return NULL;
+	
+	if (olen > 0)
+	    (*old)[olen++] = ',';
+	
+	strcpy((*old)+olen, add);
+    }
     
-    if (olen > 0)
-	(*old)[olen++] = ',';
-    
-    strcpy((*old)+olen, add);
     return *old;
 }
 
 int
 strtrim(char *str,
 	int *len) {
+    if (!str)
+	return 0;
+    
     int n = strlen(str);
 
     while (n > 0 && isspace(str[n-1]))
@@ -248,6 +282,7 @@ ata_identify(struct cam_device *cdb,
 int
 nvme_identify(int fd,
 	      char *daname,
+	      char *driver,
 	      char *pnbuf) {
     struct nvme_pt_command pt;
     struct nvme_controller_data cdata;
@@ -301,21 +336,194 @@ nvme_identify(int fd,
 	dp->revision = strndup(((const char*)cdata.fr), NVME_FIRMWARE_REVISION_LENGTH);
 	dp->ident = ident;
 	dp->danames = strdup(daname);
-	dp->physpath = strdup(pnbuf);
+	dp->driver = strdup(driver);
+	dp->path = strdup(pnbuf);
 	++dc;
 	return 1;
     }
     
     strdupcat(&dp->danames, daname);
-    strdupcat(&dp->physpath, pnbuf);
+    strdupcat(&dp->driver, driver);
+    strdupcat(&dp->path, pnbuf);
     return 0;
 }
 
-	  
+
+void
+p_strip(const char *s) {
+    while (*s) {
+	putchar(*s);
+	if (isspace(*s))
+	    while (isspace(*s))
+		++s;
+	else
+	    ++s;
+    }
+}
+
+
+int
+do_device(char *daname) {
+    int fd, id, i;
+    char *ident = NULL;
+    struct cam_device *cam;
+    DISK *dp;
+    char path[2048];
+    char idbuf[DISK_IDENT_SIZE];
+    char pnbuf[MAXPATHLEN];
+    char drvbuf[MAXPATHLEN];
+    char physbuf[MAXPATHLEN];
+    
+    
+    if (dc >= ds) {
+	dv = realloc(dv, (ds += 1024)*sizeof(DISK));
+	if (!dv)
+	    return -1;
+    }
+
+    if (strncmp(daname, "/dev/", 5) == 0) {
+	strcpy(path, daname);
+	daname = path+5;
+    } else {
+	strcpy(path, "/dev/");
+	strcpy(path+5, daname);
+    }
+    
+    cam = cam_open_device(path, O_RDWR);
+    if (cam) {
+	if (f_debug)
+	    fprintf(stderr, "*** path=%s dev=%s%u pass=%s%u\n",
+		    cam->device_path,
+		    cam->given_dev_name,
+		    cam->given_unit_number,
+		    cam->device_name,
+		    cam->dev_unit_num);
+
+	physbuf[0] = '\0';
+	if (f_phys) {
+	    int fd = open(path, O_RDONLY);
+	    
+	    if (fd >= 0) {
+		ioctl(fd, DIOCGPHYSPATH, physbuf);
+		close(fd);
+	    }
+	}
+	
+	ident = strndup((char *) &cam->serial_num[0], cam->serial_num_len);
+	if (!ident)
+	    return -1;
+	
+	for (i = 0; i < dc && strcmp(dv[i].ident, ident); i++)
+	    ;
+	dp = &dv[i];
+	
+	if (f_verbose > 1)
+	    sprintf(drvbuf, "%s%u @ bus %u",
+		    cam->sim_name, cam->sim_unit_number, cam->bus_id);
+	else
+	    sprintf(drvbuf, "%s%u",
+		    cam->sim_name, cam->sim_unit_number);
+	
+	sprintf(pnbuf, "scbus %2u target %3u lun %2jx",
+		cam->path_id,
+		cam->target_id,
+		cam->target_lun);
+	
+	if (sscanf(daname, "nda%u", &id) == 1) {
+	    sprintf(path+5, "nvme%d", id);
+	    
+	    fd = open(path, O_RDONLY);
+	    nvme_identify(fd, daname, drvbuf, pnbuf);
+	    close(fd);
+	} else {
+	    if (sscanf(daname, "ada%u", &id) == 1) {
+		ata_identify(cam, &dp->vendor, &dp->product, &dp->revision);
+	    }
+	    if (i >= dc) {
+		dp->ident = ident;
+		
+		if (!dp->vendor && cam->inq_data.vendor[0])
+		    dp->vendor = strndup(cam->inq_data.vendor, sizeof(cam->inq_data.vendor));
+		if (!dp->product && cam->inq_data.product[0])
+		    dp->product = strndup(cam->inq_data.product, sizeof(cam->inq_data.product));
+		if (!dp->revision && cam->inq_data.revision[0])
+		    dp->revision = strndup(cam->inq_data.revision, sizeof(cam->inq_data.revision));
+		
+		dp->danames = strdup(daname);
+		dp->phys = strdup(physbuf);
+		dp->driver = strdup(drvbuf);
+		dp->path = strdup(pnbuf);
+		dc++;
+	    } else {
+		strdupcat(&dp->danames, daname);
+		strdupcat(&dp->path, pnbuf);
+		strdupcat(&dp->driver, drvbuf);
+	    }
+	}
+	
+	cam_close_device(cam);
+	return 0;
+    }
+    
+    if (sscanf(daname, "nvd%d", &id) == 1)
+	sprintf(path+5, "nvme%d", id);
+    
+    
+    /* Non-CAM */
+    fd = open(path, O_RDONLY|O_DIRECT, 0);
+    if (fd < 0)
+	return -1;
+    
+    if (strncmp(daname, "nvd", 3) == 0) {
+	nvme_identify(fd, daname, path+5, "");
+	close(fd);
+	return 0;
+    }
+    
+    memset(idbuf, 0, sizeof(idbuf));
+    if (ioctl(fd, DIOCGIDENT, idbuf) >= 0)
+	ident = strndup(idbuf, sizeof(idbuf));
+    
+    if (!ident) {
+#if 0
+	fprintf(stderr, "%s: Error: %s: Unable to get serial number: %s\n",
+		argv[0], daname, strerror(errno));
+#endif
+	close(fd);
+	return 1;
+    }
+
+#if 0
+    if (ioctl(fd, DIOCGPROVIDERNAME, pnbuf) >= 0) {
+	fprintf(stderr, "** Provider: %s\n", pnbuf);
+    }
+#endif
+    physbuf[0] = '\0';
+    if (f_phys)
+	(void) ioctl(fd, DIOCGPHYSPATH, physbuf);
+    
+    for (i = 0; i < dc && strcmp(dv[i].ident, ident); i++)
+	;
+    dp = &dv[i];
+    
+    if (i >= dc) {
+	dp->ident = ident;
+	dp->danames = strdup(daname);
+	dp->phys = strdup(physbuf);
+	++dc;
+    } else {
+	strdupcat(&dp->danames, daname);
+    }
+    
+    close(fd);
+    return 0;
+}
+
+
 int
 main(int argc,
      char *argv[]) {
-    char *daname, path[2048];
+    char *daname;
     char *buf = NULL;
     size_t bsize = 0;
     int i, j;
@@ -325,26 +533,46 @@ main(int argc,
     int productlen = 7;
     int revisionlen = 4;
     int danameslen = 5;
-    int physpathlen = 4;
+    int drvlen = 3;
+    int pathlen = 4;
+    int physlen = 4;
     int numlen = 1;
 
     dv = malloc((ds = 1024)*sizeof(DISK));
     
-    for (i = 1; i < argc && argv[i][0] == '-'; i++)
+    for (i = 1; i < argc && argv[i][0] == '-'; i++) {
 	for (j = 1; argv[i][j]; j++)
 	    switch (argv[i][j]) {
 	    case 'h':
-		printf("Usage: %s [-v]\n", argv[0]);
+		printf("Usage: %s [-v] [-S<sort>] [<devices>]\n", argv[0]);
 		exit(0);
+	    case 'S':
+		if (argv[i][j+1])
+		    f_sort = strdup(argv[i]+j+1);
+		else if (argv[i+1][0] && argv[i+1][0] != '-')
+		    f_sort = strdup(argv[++i]);
+		else {
+		    fprintf(stderr, "%s: Error: Missing value for -S\n", argv[0]);
+		    exit(1);
+		}
+		goto NextArg;
 	    case 'v':
 		f_verbose++;
+		break;
+	    case 'p':
+		f_phys++;
+		break;
+	    case 'd':
+		f_debug++;
 		break;
 	    default:
 		fprintf(stderr, "%s: Error: -%c: Invalid switch\n",
 			argv[0], argv[i][j]);
 		exit(1);
 	    }
-    
+    NextArg:;
+    }
+
     if (sysctlbyname("kern.disks", NULL, &bsize, NULL, 0) < 0) {
 	fprintf(stderr, "%s: Error: Unable to list of drives from kernel: %s\n",
 		argv[0], strerror(errno));
@@ -358,132 +586,33 @@ main(int argc,
 	exit(1);
     }
 
-    if (sysctlbyname("kern.disks", buf, &bsize, NULL, 0) < 0) {
-	fprintf(stderr, "%s: Error: Unable to get list of drives from kernel: %s\n",
-		argv[0], strerror(errno));
-	exit(1);
-    }
-
-    strcpy(path, "/dev/");
-
-    while ((daname = strsep(&buf, " ")) != NULL) {
-	int fd, id;
-	char *ident = NULL;
-	struct cam_device *cam;
-	DISK *dp;
-	char idbuf[DISK_IDENT_SIZE];
-	char pnbuf[MAXPATHLEN];
-
-	if (dc >= ds) {
-	    dv = realloc(dv, (ds += 1024)*sizeof(DISK));
-	    if (!dv) {
-		fprintf(stderr, "%s: Error: Memory allocation: %s\n",
-			argv[0], strerror(errno));
+    if (i >= argc) {
+	if (sysctlbyname("kern.disks", buf, &bsize, NULL, 0) < 0) {
+	    fprintf(stderr, "%s: Error: Unable to get list of drives from kernel: %s\n",
+		    argv[0], strerror(errno));
+	    exit(1);
+	}
+	while ((daname = strsep(&buf, " ")) != NULL) {
+	    rc = do_device(daname);
+	    if (rc < 0) {
+		fprintf(stderr, "%s: Error: %s: Unable to access: %s\n", argv[0], daname, strerror(errno));
 		exit(1);
+	    } else if (rc > 0) {
+		fprintf(stderr, "%s: Error: %s: Skipped\n", argv[0], daname);
 	    }
 	}
-
-	strcpy(path+5, daname);
-	
-	cam = cam_open_device(path, O_RDWR);
-	if (cam) {
-	    ident = strndup((char *) &cam->serial_num[0], cam->serial_num_len);
-	    if (!ident) {
-		fprintf(stderr, "%s: Error: Memory allocation failure\n",
-			argv[0]);
+    } else {
+	for (; i < argc; i++) {
+	    rc = do_device(argv[i]);
+	    if (rc < 0) {
+		fprintf(stderr, "%s: Error: %s: Unable to access: %s\n",
+			argv[0], argv[i], strerror(errno));
 		exit(1);
+	    } else if (rc > 0) {
+		fprintf(stderr, "%s: Error: %s: Skipped\n",
+			argv[0], argv[i]);
 	    }
-
-	    for (i = 0; i < dc && strcmp(dv[i].ident, ident); i++)
-		;
-	    dp = &dv[i];
-	    
-	    sprintf(pnbuf, "%s%u bus %2u target %3u lun %2jx",
-		    cam->sim_name, cam->sim_unit_number,
-		    cam->bus_id,
-		    cam->target_id,
-		    cam->target_lun);
-	    
-	    if (sscanf(daname, "nda%u", &id) == 1) {
-		    sprintf(path+5, "nvme%d", id);
-
-		fd = open(path, O_RDONLY);
-		nvme_identify(fd, daname, pnbuf);
-		close(fd);
-	    } else {
-		if (sscanf(daname, "ada%u", &id) == 1) {
-		    ata_identify(cam, &dp->vendor, &dp->product, &dp->revision);
-		}
-		if (i >= dc) {
-		    dp->ident = ident;
-
-		    if (!dp->vendor && cam->inq_data.vendor[0])
-			    dp->vendor = strndup(cam->inq_data.vendor, sizeof(cam->inq_data.vendor));
-		    if (!dp->product && cam->inq_data.product[0])
-			    dp->product = strndup(cam->inq_data.product, sizeof(cam->inq_data.product));
-		    if (!dp->revision && cam->inq_data.revision[0])
-			    dp->revision = strndup(cam->inq_data.revision, sizeof(cam->inq_data.revision));
-		    
-		    dp->danames = strdup(daname);
-		    dp->physpath = strdup(pnbuf);
-		    dc++;
-		} else {
-		    strdupcat(&dp->danames, daname);
-		    strdupcat(&dp->physpath, pnbuf);
-		}
-	    }
-	    
-	    cam_close_device(cam);
-	    continue;
 	}
-	
-	if (sscanf(daname, "nvd%d", &id) == 1)
-	    sprintf(path+5, "nvme%d", id);
-
-	
-	/* Non-CAM */
-	fd = open(path, O_RDONLY|O_DIRECT, 0);
-	if (fd < 0) {
-	    fprintf(stderr, "%s: Error: %s: Open: %s\n",
-		    argv[0], path, strerror(errno));
-	    rc = 1;
-	    continue;
-	}
-	
-	
-	if (strncmp(daname, "nvd", 3) == 0) {
-	    nvme_identify(fd, daname, path+5);
-	    continue;
-	}
-
-	/* Non NVME - ATA?*/
-	fprintf(stderr, "%s: Non CAM, Non NVME\n", daname);
-
-	memset(idbuf, 0, sizeof(idbuf));
-	if (ioctl(fd, DIOCGIDENT, idbuf) >= 0)
-	    ident = strndup(idbuf, sizeof(idbuf));
-	
-	if (!ident) {
-	    fprintf(stderr, "%s: Error: %s: Unable to get serial number: %s\n",
-		    argv[0], daname, strerror(errno));
-	    close(fd);
-	    rc = 1;
-	    continue;
-	}
-	
-	for (i = 0; i < dc && strcmp(dv[i].ident, ident); i++)
-	    ;
-	dp = &dv[i];
-	
-	if (i >= dc) {
-	    dp->ident = ident;
-	    dp->danames = strdup(daname);
-	    ++dc;
-	} else {
-	    strdupcat(&dp->danames, daname);
-	}
-	
-	close(fd);
     }
     
     if (!dc)
@@ -495,11 +624,13 @@ main(int argc,
 	strtrim(dv[i].product, &productlen);
 	strtrim(dv[i].revision, &revisionlen);
 	strtrim(dv[i].danames, &danameslen);
-	strtrim(dv[i].physpath, &physpathlen);
+	strtrim(dv[i].driver, &drvlen);
+	strtrim(dv[i].path, &pathlen);
+	strtrim(dv[i].phys, &physlen);
     }
 
     numlen = (int) (log10(dc)+1);
-    qsort(&dv[0], dc, sizeof(dv[0]), dv_sort_physpath);
+    qsort(&dv[0], dc, sizeof(dv[0]), dv_sort);
 
     if (isatty(1)) {
 	printf("\033[1;4m%*s : %-*s : %-*s : %-*s : %-*s : %-*s",
@@ -509,9 +640,14 @@ main(int argc,
 	       revisionlen, "REV.",
 	       identlen, "IDENT",
 	       danameslen, "NAMES");
-	if (f_verbose) {
+	if (f_phys) {
 	    printf(" : %-*s",
-		   physpathlen, "PATH");
+		   physlen, "PHYS");
+	}
+	if (f_verbose) {
+	    printf(" : %-*s : %-*s",
+		   drvlen, "DRV",
+		   pathlen, "PATH");
 	}
 	puts("\033[0m");
     }
@@ -524,9 +660,17 @@ main(int argc,
 	       revisionlen, dv[i].revision,
 	       identlen, dv[i].ident,
 	       danameslen, dv[i].danames);
+	if (f_phys) {
+	    printf(" : %.*s",
+		   physlen, dv[i].phys);
+	}
 	if (f_verbose) {
-	    printf(" : %s",
-		   dv[i].physpath ? dv[i].physpath : "-");
+	    printf(" : %-*s : ",
+		   drvlen, dv[i].driver);
+	    if (dv[i].path)
+		p_strip(dv[i].path);
+	    else
+		putchar('-');
 	}
 	putchar('\n');
     }

@@ -3,7 +3,7 @@
 OBJS=drvlist.o
 LIBS=-lcam -lm
 
-CFLAGS=-O -Wall
+CFLAGS=-Wall -g
 
 drvlist: $(OBJS)
 	$(CC) -o drvlist $(OBJS) $(LIBS)
