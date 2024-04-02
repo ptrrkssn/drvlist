@@ -5,7 +5,12 @@ and display the most useful information in one go.
 
 Author: Peter Eriksson <pen@lysator.liu.se>
 
-Some sample output:
+Usage:
+
+# ./drvlist [-h] [-v] [-p] [<device-1> [... <device-N>]]
+
+
+Sample output:
 
 # ./drvlist -v
  # : VENDOR   : PRODUCT          : REV.     : IDENT                    : NAMES     : PATH                            
