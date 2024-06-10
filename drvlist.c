@@ -455,7 +455,8 @@ do_device(char *daname) {
 	
 	fd = open(path, O_RDONLY);
 	if (fd >= 0 && ioctl(fd, DIOCGMEDIASIZE, &msize) >= 0) {
-	    fprintf(stderr, "*** path=%s msize=%s (%lu)\n", path, size2str(msize), msize);
+	    if (f_debug)
+		fprintf(stderr, "*** path=%s msize=%s (%lu)\n", path, size2str(msize), msize);
 	}
 	close(fd);
     }    
@@ -513,6 +514,7 @@ do_device(char *daname) {
 		ata_identify(cam, &dp->vendor, &dp->product, &dp->revision);
 	    }
 	    if (i >= dc) {
+		char *cp;
 		dp->ident = ident;
 		
 		
@@ -522,6 +524,27 @@ do_device(char *daname) {
 		    dp->product = strndup(cam->inq_data.product, sizeof(cam->inq_data.product));
 		if (!dp->revision && cam->inq_data.revision[0])
 		    dp->revision = strndup(cam->inq_data.revision, sizeof(cam->inq_data.revision));
+
+		if (dp->vendor && dp->product) {
+		    if ((strcmp(dp->vendor, "ATA") == 0 || strcmp(dp->vendor, "ATA     ") == 0) && (cp = strchr(dp->product, ' ')) != NULL) {
+			if (cp[1] != '\0' && !isspace(cp[1])) {
+			    free(dp->vendor);
+			    *cp++ = '\0';
+			    dp->vendor = dp->product;
+			    dp->product = strdup(cp);
+			}
+		    }
+		    if ((strcmp(dp->vendor, "ATA") == 0 || strcmp(dp->vendor, "ATA     ") == 0)) {
+			    /* Hack... */
+			if (strncmp(dp->product, "SSDSC", 5) == 0) {
+			    free(dp->vendor);
+			    dp->vendor = strdup("INTEL");
+			} else if (strncmp(dp->product, "MZ", 2) == 0) {
+			    free(dp->vendor);
+			    dp->vendor = strdup("SAMSUNG");
+			}
+		    }
+		}
 		
 		dp->danames = strdup(daname);
 		dp->phys = strdup(physbuf);
