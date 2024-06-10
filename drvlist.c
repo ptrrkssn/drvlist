@@ -45,6 +45,7 @@
 #include <sys/ioctl.h>
 #include <sys/sysctl.h>
 #include <sys/disk.h>
+#include <sys/stat.h>
 #include <camlib.h>
 #include <cam/scsi/scsi_message.h>
 #include <cam/ata/ata_all.h>
@@ -69,6 +70,7 @@ typedef struct {
     char *driver;
     char *path;
     char *phys;
+    char *size;
 } DISK;
 
 #define MAXDISK 2048
@@ -378,6 +380,47 @@ p_strip(const char *s) {
     }
 }
 
+char *
+size2str(off_t size) {
+    char buf[256];
+    double ds = size;
+    
+    if (size < 2000) {
+	sprintf(buf, "%lu", size);
+	return strdup(buf);
+    }
+
+    ds /= 1000;
+    if (ds < 2000) {
+	sprintf(buf, "%.0fK", ds);
+	return strdup(buf);
+    }
+    
+    ds /= 1000;
+    if (ds < 2000) {
+	sprintf(buf, "%.0fM", ds);
+	return strdup(buf);
+    }
+    
+    ds /= 1000;
+    if (ds < 2000) {
+	sprintf(buf, "%.0fG", ds);
+	return strdup(buf);
+    }
+	
+    
+    ds /= 1000;
+    if (ds < 2000) {
+	sprintf(buf, "%.0fT", ds);
+	return strdup(buf);
+    }
+	
+    
+    ds /= 1000;
+    sprintf(buf, "%.0fP", ds);
+    return strdup(buf);
+}
+
 
 int
 do_device(char *daname) {
@@ -390,7 +433,8 @@ do_device(char *daname) {
     char pnbuf[MAXPATHLEN];
     char drvbuf[MAXPATHLEN];
     char physbuf[MAXPATHLEN];
-    
+    off_t msize = 0;
+
     
     if (dc >= ds) {
 	dv = realloc(dv, (ds += 1024)*sizeof(DISK));
@@ -405,16 +449,27 @@ do_device(char *daname) {
 	strcpy(path, "/dev/");
 	strcpy(path+5, daname);
     }
+
+    if (1) {
+	int fd;
+	
+	fd = open(path, O_RDONLY);
+	if (fd >= 0 && ioctl(fd, DIOCGMEDIASIZE, &msize) >= 0) {
+	    fprintf(stderr, "*** path=%s msize=%s (%lu)\n", path, size2str(msize), msize);
+	}
+	close(fd);
+    }    
     
     cam = cam_open_device(path, O_RDWR);
     if (cam) {
-	if (f_debug)
+	if (f_debug) {
 	    fprintf(stderr, "*** path=%s dev=%s%u pass=%s%u\n",
-		    cam->device_path,
+		    path,
 		    cam->given_dev_name,
 		    cam->given_unit_number,
 		    cam->device_name,
 		    cam->dev_unit_num);
+	}
 
 	physbuf[0] = '\0';
 	if (f_phys) {
@@ -473,6 +528,8 @@ do_device(char *daname) {
 		dp->driver = strdup(drvbuf);
 		dp->path = strdup(pnbuf);
 		dp->phys = strdup(physbuf);
+		if (msize > 0)
+		    dp->size = size2str(msize);
 		dc++;
 	    } else {
 		free(ident);
@@ -522,6 +579,8 @@ do_device(char *daname) {
 	dp->ident = ident;
 	dp->danames = strdup(daname);
 	dp->phys = strdup(physbuf);
+	if (msize > 0)
+	    dp->size = size2str(msize);
 	++dc;
     } else {
 	free(ident);
@@ -550,8 +609,8 @@ main(int argc,
     int pathlen = 4;
     int physlen = 4;
     int numlen = 1;
+    int sizelen = 3;
 
-    
     dv = calloc((ds = 1024), sizeof(DISK));
     if (!dv) {
 	fprintf(stderr, "%s: Error: calloc: %s\n",
@@ -650,18 +709,20 @@ main(int argc,
 	strtrim(dv[i].driver, &drvlen);
 	strtrim(dv[i].path, &pathlen);
 	strtrim(dv[i].phys, &physlen);
+	strtrim(dv[i].size, &sizelen);
     }
 
     numlen = (int) (log10(dc)+1);
     qsort(&dv[0], dc, sizeof(dv[0]), dv_sort);
 
     if (isatty(1)) {
-	printf("\033[1;4m%*s : %-*s : %-*s : %-*s : %-*s : %-*s",
+	printf("\033[1;4m%*s : %-*s : %-*s : %-*s : %-*s : %*s : %-*s",
 	       numlen, "#",
 	       vendorlen, "VENDOR",
 	       productlen, "PRODUCT",
 	       revisionlen, "REV.",
 	       identlen, "IDENT",
+	       sizelen, "SIZE",
 	       danameslen, "NAMES");
 	if (f_phys) {
 	    printf(" : %-*s",
@@ -676,12 +737,13 @@ main(int argc,
     }
 
     for (i = 0; i < dc; i++) {
-	printf("%*u : %-*s : %-*s : %-*s : %-*s : %-*s",
+	printf("%*u : %-*s : %-*s : %-*s : %-*s : %*s : %-*s",
 	       numlen, i+1,
 	       vendorlen, dv[i].vendor ? dv[i].vendor : "?",
 	       productlen, dv[i].product ? dv[i].product : "?",
 	       revisionlen, dv[i].revision ? dv[i].revision : "?",
 	       identlen, dv[i].ident,
+	       sizelen, dv[i].size ? dv[i].size : "?",
 	       danameslen, dv[i].danames);
 	if (f_phys) {
 	    printf(" : %.*s",
