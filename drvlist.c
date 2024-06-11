@@ -57,6 +57,7 @@
 int f_verbose = 0;
 int f_debug = 0;
 int f_phys = 0;
+int f_maxwidth = 20;
 
 char *f_sort = NULL;
 
@@ -150,19 +151,51 @@ strdupcat(char **old,
 int
 strtrim(char *str,
 	int *len) {
+    int i, j, n;
+
+    
     if (!str)
 	return 0;
-    
-    int n = strlen(str);
 
+    /* Remove leading whitespace */
+    for (i = 0; str[i] && isspace(str[i]); i++)
+	;
+    if (i > 0) {
+	for (j = 0; str[i]; j++, i++)
+	    str[j] = str[i];
+	str[j] = '\0';
+    }
+
+    /* Remove trailing whitespace */
+    n = strlen(str);
     while (n > 0 && isspace(str[n-1]))
 	--n;
     str[n] = '\0';
-    if (n > *len)
+    if (len && n > *len)
 	*len = n;
     return n;
 }
 
+
+int strntrim(char *str,
+	     int *len,
+	     int max) {
+    int rlen = strtrim(str, len);
+
+    if (max == 0)
+	return rlen;
+    
+    if (rlen+2 > max) {
+	str[max-2] = '.';
+	str[max-1] = '.';
+	str[max] = '\0';
+	rlen = max;
+	if (len)
+	    *len = rlen;
+    }
+
+    return rlen;
+}
 
 static int
 ata_cam_send(struct cam_device *device, union ccb *ccb)
@@ -518,15 +551,23 @@ do_device(char *daname) {
 		dp->ident = ident;
 		
 		
-		if (!dp->vendor && cam->inq_data.vendor[0])
+		if (!dp->vendor && cam->inq_data.vendor[0]) {
 		    dp->vendor = strndup(cam->inq_data.vendor, sizeof(cam->inq_data.vendor));
-		if (!dp->product && cam->inq_data.product[0])
+		    strtrim(dp->vendor, NULL);
+		}
+		if (!dp->product && cam->inq_data.product[0]) {
 		    dp->product = strndup(cam->inq_data.product, sizeof(cam->inq_data.product));
-		if (!dp->revision && cam->inq_data.revision[0])
+		    strtrim(dp->product, NULL);
+		}
+
+		if (!dp->revision && cam->inq_data.revision[0]) {
 		    dp->revision = strndup(cam->inq_data.revision, sizeof(cam->inq_data.revision));
+		    strtrim(dp->revision, NULL);
+		}
 
 		if (dp->vendor && dp->product) {
-		    if ((strcmp(dp->vendor, "ATA") == 0 || strcmp(dp->vendor, "ATA     ") == 0) && (cp = strchr(dp->product, ' ')) != NULL) {
+		    if ((strcmp(dp->vendor, "ATA") == 0 || strcmp(dp->vendor, "USB") == 0) &&
+			(cp = strchr(dp->product, ' ')) != NULL) {
 			if (cp[1] != '\0' && !isspace(cp[1])) {
 			    free(dp->vendor);
 			    *cp++ = '\0';
@@ -534,7 +575,7 @@ do_device(char *daname) {
 			    dp->product = strdup(cp);
 			}
 		    }
-		    if ((strcmp(dp->vendor, "ATA") == 0 || strcmp(dp->vendor, "ATA     ") == 0)) {
+		    if ((strcmp(dp->vendor, "ATA") == 0 || strcmp(dp->vendor, "USB") == 0)) {
 			    /* Hack... */
 			if (strncmp(dp->product, "SSDSC", 5) == 0) {
 			    free(dp->vendor);
@@ -645,7 +686,7 @@ main(int argc,
 	for (j = 1; argv[i][j]; j++)
 	    switch (argv[i][j]) {
 	    case 'h':
-		printf("Usage: %s [-v] [-p] [-S<sort>] [<devices>]\n", argv[0]);
+		printf("Usage: %s [-v] [-p] [-S<sort>] [-W<maxwidth>] [<devices>]\n", argv[0]);
 		exit(0);
 	    case 'S':
 		if (argv[i][j+1])
@@ -657,8 +698,18 @@ main(int argc,
 		    exit(1);
 		}
 		goto NextArg;
+	    case 'W':
+		if (argv[i][j+1] && sscanf(argv[i]+j+1, "%d", &f_maxwidth) != 1) {
+		    if (argv[i+1][0] && argv[i+1][0] != '-' && sscanf(argv[i+1], "%d", &f_maxwidth) != 1) {
+			fprintf(stderr, "%s: Error: Missing value for -W\n", argv[0]);
+			exit(1);
+		    }
+		}
+		goto NextArg;
 	    case 'v':
 		f_verbose++;
+		if (f_verbose > 1)
+		    f_maxwidth = 0;
 		break;
 	    case 'p':
 		f_phys++;
@@ -724,15 +775,15 @@ main(int argc,
 	return 0;
     
     for (i = 0; i < dc; i++) {
-	strtrim(dv[i].ident, &identlen);
-	strtrim(dv[i].vendor, &vendorlen);
-	strtrim(dv[i].product, &productlen);
-	strtrim(dv[i].revision, &revisionlen);
-	strtrim(dv[i].danames, &danameslen);
-	strtrim(dv[i].driver, &drvlen);
-	strtrim(dv[i].path, &pathlen);
-	strtrim(dv[i].phys, &physlen);
-	strtrim(dv[i].size, &sizelen);
+	strntrim(dv[i].ident, &identlen, f_maxwidth);
+	strntrim(dv[i].vendor, &vendorlen, f_maxwidth);
+	strntrim(dv[i].product, &productlen, f_maxwidth);
+	strntrim(dv[i].revision, &revisionlen, f_maxwidth);
+	strntrim(dv[i].danames, &danameslen, f_maxwidth);
+	strntrim(dv[i].driver, &drvlen, f_maxwidth);
+	strntrim(dv[i].path, &pathlen, f_maxwidth);
+	strntrim(dv[i].phys, &physlen, f_maxwidth);
+	strntrim(dv[i].size, &sizelen, f_maxwidth);
     }
 
     numlen = (int) (log10(dc)+1);
