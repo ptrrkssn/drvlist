@@ -3,7 +3,7 @@
  *
  * A small FreeBSD utility to enumerate installed drives in a system.
  *
- * Copyright (c) 2024 Peter Eriksson <pen@lysator.liu.se>
+ * Copyright (c) 2024-2025 Peter Eriksson <pen@lysator.liu.se>
  *
  * All rights reserved.
  * 
@@ -57,7 +57,7 @@
 int f_verbose = 0;
 int f_debug = 0;
 int f_phys = 0;
-int f_maxwidth = 20;
+int f_maxwidth = 22;
 
 char *f_sort = NULL;
 
@@ -177,9 +177,10 @@ strtrim(char *str,
 }
 
 
-int strntrim(char *str,
-	     int *len,
-	     int max) {
+int
+strntrim(char *str,
+	 int *len,
+	 int max) {
     int rlen = strtrim(str, len);
 
     if (max == 0)
@@ -317,12 +318,55 @@ ata_identify(struct cam_device *cdb,
 }
 
 
+char *
+size2str(off_t size) {
+    char buf[256];
+    double ds = size;
+    
+    if (size < 9000) {
+	sprintf(buf, "%lu", size);
+	return strdup(buf);
+    }
+
+    ds /= 1000;
+    if (ds < 9000) {
+	sprintf(buf, "%.0fK", ds);
+	return strdup(buf);
+    }
+    
+    ds /= 1000;
+    if (ds < 9000) {
+	sprintf(buf, "%.0fM", ds);
+	return strdup(buf);
+    }
+    
+    ds /= 1000;
+    if (ds < 9000) {
+	sprintf(buf, "%.0fG", ds);
+	return strdup(buf);
+    }
+	
+    
+    ds /= 1000;
+    if (ds < 9000) {
+	sprintf(buf, "%.0fT", ds);
+	return strdup(buf);
+    }
+	
+    
+    ds /= 1000;
+    sprintf(buf, "%.0fP", ds);
+    return strdup(buf);
+}
+
+
 
 int
 nvme_identify(int fd,
 	      char *daname,
 	      char *driver,
-	      char *pnbuf) {
+	      char *pnbuf,
+	      off_t msize) {
     struct nvme_pt_command pt;
     struct nvme_controller_data cdata;
     char *ident = NULL;
@@ -376,6 +420,9 @@ nvme_identify(int fd,
 	    dp->product = strdup(cp);
 	}
 
+	if (msize > 0)
+	    dp->size = size2str(msize);
+	
 	if (!pnbuf) {
 	    sprintf(pbuf, "pci vendor 0x%04x:0x%04x oui %02x:%02x:%02x controller 0x%04x",
 		    cdata.vid, cdata.ssvid,
@@ -411,47 +458,6 @@ p_strip(const char *s) {
 	else
 	    ++s;
     }
-}
-
-char *
-size2str(off_t size) {
-    char buf[256];
-    double ds = size;
-    
-    if (size < 2000) {
-	sprintf(buf, "%lu", size);
-	return strdup(buf);
-    }
-
-    ds /= 1000;
-    if (ds < 2000) {
-	sprintf(buf, "%.0fK", ds);
-	return strdup(buf);
-    }
-    
-    ds /= 1000;
-    if (ds < 2000) {
-	sprintf(buf, "%.0fM", ds);
-	return strdup(buf);
-    }
-    
-    ds /= 1000;
-    if (ds < 2000) {
-	sprintf(buf, "%.0fG", ds);
-	return strdup(buf);
-    }
-	
-    
-    ds /= 1000;
-    if (ds < 2000) {
-	sprintf(buf, "%.0fT", ds);
-	return strdup(buf);
-    }
-	
-    
-    ds /= 1000;
-    sprintf(buf, "%.0fP", ds);
-    return strdup(buf);
 }
 
 
@@ -539,7 +545,7 @@ do_device(char *daname) {
 	    sprintf(path+5, "nvme%d", id);
 	    
 	    fd = open(path, O_RDONLY);
-	    nvme_identify(fd, daname, drvbuf, pnbuf);
+	    nvme_identify(fd, daname, drvbuf, pnbuf, msize);
 	    free(ident);
 	    close(fd);
 	} else {
@@ -607,7 +613,7 @@ do_device(char *daname) {
 	return 0;
     }
 
-    if (sscanf(daname, "nvd%d", &id) == 1)
+    if (sscanf(daname, "nvd%d", &id) == 1 || sscanf(daname, "nda%d", &id) == 1)
 	sprintf(path+5, "nvme%d", id);
     
     
@@ -616,8 +622,8 @@ do_device(char *daname) {
     if (fd < 0)
 	return -1;
     
-    if (strncmp(daname, "nvd", 3) == 0) {
-	nvme_identify(fd, daname, path+5, NULL);
+    if (strncmp(daname, "nvd", 3) == 0 || strncmp(daname, "nda", 3) == 0) {
+	nvme_identify(fd, daname, path+5, NULL, msize);
 	close(fd);
 	return 0;
     }
