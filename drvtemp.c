@@ -527,8 +527,7 @@ cam_drvtemp_nda(struct cam_device *dev,
 int
 cam_drvtemp(struct cam_device *dev,
 	    double *temp) {
-    const char *cp;
-    int saved_errno, rc;
+    int rc;
     
     
     if (!dev || !temp) {
