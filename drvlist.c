@@ -1,4 +1,4 @@
-/*
+/* 
  * drvlist.c
  *
  * A small FreeBSD utility to enumerate installed drives in a system.
@@ -52,6 +52,8 @@
 #include <cam/mmc/mmc_all.h>
 #include <dev/nvme/nvme.h>
 
+#include "drvtemp.h"
+
 
 
 int f_verbose = 0;
@@ -72,6 +74,7 @@ typedef struct {
     char *path;
     char *phys;
     char *size;
+    char *temp;
 } DISK;
 
 #define MAXDISK 2048
@@ -444,6 +447,7 @@ nvme_identify(int fd,
     strdupcat(&dp->danames, daname);
     strdupcat(&dp->driver, driver);
     strdupcat(&dp->path, pnbuf);
+
     return 0;
 }
 
@@ -463,7 +467,7 @@ p_strip(const char *s) {
 
 int
 do_device(char *daname) {
-    int fd, id, i;
+    int fd, i, rc;
     char *ident = NULL;
     struct cam_device *cam;
     DISK *dp;
@@ -473,14 +477,18 @@ do_device(char *daname) {
     char drvbuf[MAXPATHLEN];
     char physbuf[MAXPATHLEN];
     off_t msize = 0;
-
+    double temp_c;
     
+
+    /* Increase size of drive table */
     if (dc >= ds) {
 	dv = realloc(dv, (ds += 1024)*sizeof(DISK));
 	if (!dv)
 	    return -1;
     }
 
+    
+    /* Get device name and path */
     if (strncmp(daname, "/dev/", 5) == 0) {
 	strcpy(path, daname);
 	daname = path+5;
@@ -489,28 +497,33 @@ do_device(char *daname) {
 	strcpy(path+5, daname);
     }
 
-    if (1) {
-	int fd;
-	
-	fd = open(path, O_RDONLY);
-	if (fd >= 0 && ioctl(fd, DIOCGMEDIASIZE, &msize) >= 0) {
-	    if (f_debug)
-		fprintf(stderr, "*** path=%s msize=%s (%lu)\n", path, size2str(msize), msize);
-	}
-	close(fd);
-    }    
+
+    /* Get drive size */
+    fd = open(path, O_RDONLY);
+    if (fd >= 0 && ioctl(fd, DIOCGMEDIASIZE, &msize) >= 0) {
+	if (f_debug)
+	    fprintf(stderr, "*** path=%s msize=%s (%lu)\n", path, size2str(msize), msize);
+    }
+    close(fd);
+
+
     
     cam = cam_open_device(path, O_RDWR);
     if (cam) {
 	if (f_debug) {
-	    fprintf(stderr, "*** path=%s dev=%s%u pass=%s%u\n",
+	    fprintf(stderr, "*** CAM Device: path=%s serial=%*s dev=%s%u pass=%s%u sim=%s%u\n",
 		    path,
+		    cam->serial_num_len, cam->serial_num,
 		    cam->given_dev_name,
 		    cam->given_unit_number,
 		    cam->device_name,
-		    cam->dev_unit_num);
+		    cam->dev_unit_num,
+		    cam->sim_name,
+		    cam->sim_unit_number);
 	}
 
+
+	/* Get physical path */
 	physbuf[0] = '\0';
 	if (f_phys) {
 	    int fd = open(path, O_RDONLY);
@@ -520,11 +533,14 @@ do_device(char *daname) {
 		close(fd);
 	    }
 	}
-	
+
+
+	/* Get device serial number */
 	ident = strndup((char *) &cam->serial_num[0], cam->serial_num_len);
 	if (!ident)
 	    return -1;
-	
+
+	/* Locate multipath alternate names */
 	for (i = 0; i < dc && strcmp(dv[i].ident, ident); i++)
 	    ;
 	dp = &dv[i];
@@ -540,18 +556,45 @@ do_device(char *daname) {
 		cam->path_id,
 		cam->target_id,
 		cam->target_lun);
+
 	
-	if (sscanf(daname, "nda%u", &id) == 1) {
-	    sprintf(path+5, "nvme%d", id);
-	    
-	    fd = open(path, O_RDONLY);
-	    nvme_identify(fd, daname, drvbuf, pnbuf, msize);
-	    free(ident);
-	    close(fd);
+	if (strcmp(cam->given_dev_name, "nda") == 0) {
+	    /* NVME device */
+
+	    char npath[1024];
+
+	    /* Check to make sure it is a local NVME controller */
+	    if (strcmp(cam->sim_name, "nvme") == 0) {
+		sprintf(npath, "/dev/%s%u", cam->sim_name, cam->sim_unit_number);
+
+		fd = open(npath, O_RDONLY);
+		if (fd >= 0) {
+		    nvme_identify(fd, daname, drvbuf, pnbuf, msize);
+		    free(ident);
+		    close(fd);
+		} else {
+		    fprintf(stderr, "%s: Unable to open\n", npath);
+		    return -1;
+		}
+	    } else {
+		fprintf(stderr, "%s%u -> %s%u: Non-local NVME device\n",
+			cam->given_dev_name, cam->given_unit_number, 
+			cam->sim_name, cam->sim_unit_number);
+#if 0
+		exit(1);
+#else
+		return -1;
+#endif
+	    }
+
 	} else {
-	    if (sscanf(daname, "ada%u", &id) == 1) {
+	    /* DA (SAS/SCSI) or ADA (SATA) drive */
+	    
+	    if (strcmp(cam->given_dev_name, "ada") == 0) {
+		/* SATA device */
 		ata_identify(cam, &dp->vendor, &dp->product, &dp->revision);
 	    }
+
 	    if (i >= dc) {
 		char *cp;
 		dp->ident = ident;
@@ -609,25 +652,34 @@ do_device(char *daname) {
 	    }
 	}
 	
+	rc = cam_drvtemp(cam, &temp_c);
+	if (rc > 0) {
+	    char buf[256];
+
+	    sprintf(buf, "%.1f", temp_c);
+	    dp->temp = strdup(buf);
+	} else if (rc == 0)
+	    dp->temp = strdup("-");
+	else
+	    dp->temp = NULL;
+	
 	cam_close_device(cam);
 	return 0;
     }
 
-    if (sscanf(daname, "nvd%d", &id) == 1 || sscanf(daname, "nda%d", &id) == 1)
-	sprintf(path+5, "nvme%d", id);
-    
-    
-    /* Non-CAM */
+    /* Non-CAM device */
     fd = open(path, O_RDONLY|O_DIRECT, 0);
     if (fd < 0)
 	return -1;
-    
+
+#if 0
     if (strncmp(daname, "nvd", 3) == 0 || strncmp(daname, "nda", 3) == 0) {
 	nvme_identify(fd, daname, path+5, NULL, msize);
 	close(fd);
 	return 0;
     }
-
+#endif
+    
     memset(idbuf, 0, sizeof(idbuf));
     if (ioctl(fd, DIOCGIDENT, idbuf) >= 0)
 	ident = strndup(idbuf, sizeof(idbuf));
@@ -680,6 +732,8 @@ main(int argc,
     int physlen = 4;
     int numlen = 1;
     int sizelen = 3;
+    int templen = 3;
+    
 
     dv = calloc((ds = 1024), sizeof(DISK));
     if (!dv) {
@@ -790,19 +844,21 @@ main(int argc,
 	strntrim(dv[i].path, &pathlen, f_maxwidth);
 	strntrim(dv[i].phys, &physlen, f_maxwidth);
 	strntrim(dv[i].size, &sizelen, f_maxwidth);
+	strntrim(dv[i].temp, &templen, f_maxwidth);
     }
 
     numlen = (int) (log10(dc)+1);
     qsort(&dv[0], dc, sizeof(dv[0]), dv_sort);
 
     if (isatty(1)) {
-	printf("\033[1;4m%*s : %-*s : %-*s : %-*s : %-*s : %*s : %-*s",
+	printf("\033[1;4m%*s : %-*s : %-*s : %-*s : %-*s : %-*s : %-*s : %-*s",
 	       numlen, "#",
 	       vendorlen, "VENDOR",
 	       productlen, "PRODUCT",
 	       revisionlen, "REV.",
 	       identlen, "IDENT",
 	       sizelen, "SIZE",
+	       templen, "TEMP",
 	       danameslen, "NAMES");
 	if (f_phys) {
 	    printf(" : %-*s",
@@ -817,13 +873,14 @@ main(int argc,
     }
 
     for (i = 0; i < dc; i++) {
-	printf("%*u : %-*s : %-*s : %-*s : %-*s : %*s : %-*s",
+	printf("%*u : %-*s : %-*s : %-*s : %-*s : %*s : %*s : %-*s",
 	       numlen, i+1,
 	       vendorlen, dv[i].vendor ? dv[i].vendor : "?",
 	       productlen, dv[i].product ? dv[i].product : "?",
 	       revisionlen, dv[i].revision ? dv[i].revision : "?",
 	       identlen, dv[i].ident,
 	       sizelen, dv[i].size ? dv[i].size : "?",
+	       templen, dv[i].temp ? dv[i].temp : "?",
 	       danameslen, dv[i].danames);
 	if (f_phys) {
 	    printf(" : %.*s",
