@@ -1,7 +1,7 @@
 /*
- * drvtemp.h
+ * tests.h
  *
- * Code to read drive temperature from SAS/SCSI (da), SATA (ada) and NVME (nda) drives
+ * Code to read selftest log status from SAS/SCSI (da) drives
  *
  * Copyright (c) 2026 Peter Eriksson <pen@lysator.liu.se>
  *
@@ -33,17 +33,44 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifndef DRVTEMP_H
-#define DRVTEMP_H 1
+#ifndef DRVLIST_TESTS_H
+#define DRVLIST_TESTS_H 1
 
-#include <cam/cam.h>
+enum scsi_tests_state {
+    SCSI_TESTS_UNKNOWN = -1,
+    SCSI_TESTS_NONE = 0,
+    SCSI_TESTS_PASSED,
+    SCSI_TESTS_FAILED,
+    SCSI_TESTS_ABORTED,
+    SCSI_TESTS_IN_PROGRESS
+};
+
+struct scsi_tests_result {
+    enum scsi_tests_state state;
+
+    uint16_t parameter_code;
+    uint8_t test_code;
+    uint8_t result_code;
+
+    uint16_t power_on_hours;
+    uint64_t failing_lba;
+
+    uint8_t sense_key;
+    uint8_t asc;
+    uint8_t ascq;
+};
+
+extern const char *
+scsi_tests_state_name(enum scsi_tests_state state);
+
+extern const char *
+scsi_tests_result_name(uint8_t code);
+
+extern enum scsi_tests_state
+classify_tests_result(uint8_t code);
 
 extern int
-cam_drvtemp(struct cam_device *dev,
-	double *temp_c);
-
-extern int
-drvtemp(const char *path,
-	double *temp_c);
+scsi_tests_read_last(struct cam_device *dev,
+		     struct scsi_tests_result *result);
 
 #endif

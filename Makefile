@@ -1,6 +1,6 @@
 # Makefile for drvlist
 
-OBJS=drvlist.o drvtemp.o
+OBJS=drvlist.o temp.o smart.o tests.o
 LIBS=-lcam -lm
 
 CFLAGS=-Wall -g

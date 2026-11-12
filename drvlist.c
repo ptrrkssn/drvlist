@@ -52,13 +52,18 @@
 #include <cam/mmc/mmc_all.h>
 #include <dev/nvme/nvme.h>
 
-#include "drvtemp.h"
-
+#include "temp.h"
+#include "smart.h"
+#include "tests.h"
 
 
 int f_verbose = 0;
 int f_debug = 0;
 int f_phys = 0;
+int f_temp = 0;
+int f_smart = 0;
+int f_poweron = 0;
+int f_driver = 0;
 int f_maxwidth = 22;
 
 char *f_sort = NULL;
@@ -75,6 +80,9 @@ typedef struct {
     char *phys;
     char *size;
     char *temp;
+    char *smart;
+    char *tests;
+    char *poweron;
 } DISK;
 
 #define MAXDISK 2048
@@ -478,7 +486,7 @@ do_device(char *daname) {
     char physbuf[MAXPATHLEN];
     off_t msize = 0;
     double temp_c;
-    
+    struct smart_result smart;
 
     /* Increase size of drive table */
     if (dc >= ds) {
@@ -662,6 +670,30 @@ do_device(char *daname) {
 	    dp->temp = strdup("-");
 	else
 	    dp->temp = NULL;
+
+	rc = cam_smart_status(cam, &smart);
+	if (rc > 0) {
+	    dp->smart = strdup(smart_health_name(smart.health));
+	} else if (rc == 0)
+	    dp->smart = strdup("-");
+	else
+	    dp->smart = NULL;
+
+	if (strcmp(cam->given_dev_name, "da") == 0) {
+	    struct scsi_tests_result result;
+
+	    rc = scsi_tests_read_last(cam, &result);
+	    if (rc >= 0) {
+		dp->tests = strdup(scsi_tests_state_name(result.state));
+		if (result.power_on_hours > 0) {
+		    char pbuf[256];
+		    
+		    sprintf(pbuf, "%u", result.power_on_hours);
+		    dp->poweron = strdup(pbuf);
+		}
+	    } else
+		dp->tests = NULL;
+	}
 	
 	cam_close_device(cam);
 	return 0;
@@ -733,6 +765,9 @@ main(int argc,
     int numlen = 1;
     int sizelen = 3;
     int templen = 3;
+    int smartlen = 5;
+    int testslen = 5;
+    int poweronlen = 7;
     
 
     dv = calloc((ds = 1024), sizeof(DISK));
@@ -746,7 +781,7 @@ main(int argc,
 	for (j = 1; argv[i][j]; j++)
 	    switch (argv[i][j]) {
 	    case 'h':
-		printf("Usage: %s [-v] [-p] [-S<sort>] [-W<maxwidth>] [<devices>]\n", argv[0]);
+		printf("Usage: %s [-vpts] [-S<sort>] [-W<maxwidth>] [<devices>]\n", argv[0]);
 		exit(0);
 	    case 'S':
 		if (argv[i][j+1])
@@ -766,16 +801,31 @@ main(int argc,
 		    }
 		}
 		goto NextArg;
+	    case 'D':
+		if (argv[i][j+1] && sscanf(argv[i]+j+1, "%d", &f_debug) != 1) {
+		    if (argv[i+1][0] && argv[i+1][0] != '-' && sscanf(argv[i+1], "%d", &f_debug) != 1) {
+			fprintf(stderr, "%s: Error: Missing value for -D\n", argv[0]);
+			exit(1);
+		    }
+		} else
+		    f_debug++;
+		goto NextArg;
 	    case 'v':
 		f_verbose++;
-		if (f_verbose > 1)
+		if (f_verbose > 3)
 		    f_maxwidth = 0;
 		break;
 	    case 'p':
 		f_phys++;
 		break;
+	    case 't':
+		f_temp++;
+		break;
+	    case 's':
+		f_smart++;
+		break;
 	    case 'd':
-		f_debug++;
+		f_driver++;
 		break;
 	    default:
 		fprintf(stderr, "%s: Error: -%c: Invalid switch\n",
@@ -783,6 +833,16 @@ main(int argc,
 		exit(1);
 	    }
     NextArg:;
+    }
+
+    if (f_verbose > 0) {
+	f_temp++;
+	if (f_verbose > 1) {
+	    f_smart++;
+	    if (f_verbose > 2) {
+		f_poweron++;
+	    }
+	}
     }
 
     if (i >= argc) {
@@ -845,26 +905,44 @@ main(int argc,
 	strntrim(dv[i].phys, &physlen, f_maxwidth);
 	strntrim(dv[i].size, &sizelen, f_maxwidth);
 	strntrim(dv[i].temp, &templen, f_maxwidth);
+	strntrim(dv[i].smart, &smartlen, f_maxwidth);
+	strntrim(dv[i].tests, &testslen, f_maxwidth);
+	strntrim(dv[i].poweron, &poweronlen, f_maxwidth);
     }
 
     numlen = (int) (log10(dc)+1);
     qsort(&dv[0], dc, sizeof(dv[0]), dv_sort);
 
     if (isatty(1)) {
-	printf("\033[1;4m%*s : %-*s : %-*s : %-*s : %-*s : %-*s : %-*s : %-*s",
+	printf("\033[1;4m%*s : %-*s : %-*s : %-*s : %-*s : %-*s",
 	       numlen, "#",
 	       vendorlen, "VENDOR",
 	       productlen, "PRODUCT",
 	       revisionlen, "REV.",
 	       identlen, "IDENT",
-	       sizelen, "SIZE",
-	       templen, "TEMP",
+	       sizelen, "SIZE");
+
+	if (f_temp)
+	    printf(" : %*s", 
+		   templen, "TEMP");
+
+	if (f_smart)
+	    printf(" : %-*s : %-*s",
+		   smartlen, "SMART",
+		   testslen, "TESTS");
+
+	if (f_poweron)
+	    printf(" : %*s",
+		   poweronlen, "POWERON");
+	
+	printf(" : %-*s", 
 	       danameslen, "NAMES");
+	
 	if (f_phys) {
 	    printf(" : %-*s",
 		   physlen, "PHYS");
 	}
-	if (f_verbose) {
+	if (f_driver) {
 	    printf(" : %-*s : %-*s",
 		   drvlen, "DRV.",
 		   pathlen, "PATH");
@@ -873,20 +951,35 @@ main(int argc,
     }
 
     for (i = 0; i < dc; i++) {
-	printf("%*u : %-*s : %-*s : %-*s : %-*s : %*s : %*s : %-*s",
+	printf("%*u : %-*s : %-*s : %-*s : %-*s : %-*s",
 	       numlen, i+1,
 	       vendorlen, dv[i].vendor ? dv[i].vendor : "?",
 	       productlen, dv[i].product ? dv[i].product : "?",
 	       revisionlen, dv[i].revision ? dv[i].revision : "?",
 	       identlen, dv[i].ident,
-	       sizelen, dv[i].size ? dv[i].size : "?",
-	       templen, dv[i].temp ? dv[i].temp : "?",
+	       sizelen, dv[i].size ? dv[i].size : "?");
+
+	if (f_temp)
+	    printf(" : %*s", 
+		   templen, dv[i].temp ? dv[i].temp : "?");
+
+	if (f_smart) 
+	    printf(" : %-*s : %-*s",
+		   smartlen, dv[i].smart ? dv[i].smart : "?",
+		   testslen, dv[i].tests ? dv[i].tests : "?");
+
+	if (f_poweron)
+	    printf(" : %*s",
+		   poweronlen, dv[i].poweron ? dv[i].poweron : "?");
+	
+	printf(" : %-*s", 
 	       danameslen, dv[i].danames);
+	       
 	if (f_phys) {
 	    printf(" : %.*s",
 		   physlen, dv[i].phys ? dv[i].phys : "");
 	}
-	if (f_verbose) {
+	if (f_driver) {
 	    printf(" : %-*s : ",
 		   drvlen, dv[i].driver);
 	    if (dv[i].path)

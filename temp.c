@@ -1,5 +1,5 @@
 /*
- * drvtemp.c
+ * temp.c
  *
  * Code to read drive temperature from SAS/SCSI (da), SATA (ada) and NVME (nda) drives
  *
@@ -51,7 +51,7 @@
 #include <stdint.h>
 #include <string.h>
 
-#include "drvtemp.h"
+#include "temp.h"
 
 
 /*
