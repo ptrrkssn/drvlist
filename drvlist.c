@@ -3,7 +3,7 @@
  *
  * A small FreeBSD utility to enumerate installed drives in a system.
  *
- * Copyright (c) 2024-2025 Peter Eriksson <pen@lysator.liu.se>
+ * Copyright (c) 2024-2026 Peter Eriksson <pen@lysator.liu.se>
  *
  * All rights reserved.
  * 
@@ -62,10 +62,12 @@ int f_debug = 0;
 int f_phys = 0;
 int f_temp = 0;
 int f_smart = 0;
+int f_tests = 0;
 int f_poweron = 0;
 int f_driver = 0;
 int f_maxwidth = 22;
 
+char *f_sep = " : ";
 char *f_sort = NULL;
 
 
@@ -83,22 +85,22 @@ typedef struct {
     char *smart;
     char *tests;
     char *poweron;
-} DISK;
+} DRIVE;
 
-#define MAXDISK 2048
+#define MAXDRIVE 2048
 
 int dc = 0;
 int ds = 0;
-DISK *dv;
+DRIVE *dv;
 
 
 static int
-dv_sort_ident(const DISK *da, const DISK *db) {
+dv_sort_ident(const DRIVE *da, const DRIVE *db) {
     return strcmp(da->ident, db->ident);
 }
 
 static int
-dv_sort_devpath(const DISK *da, const DISK *db) {
+dv_sort_devpath(const DRIVE *da, const DRIVE *db) {
     int d;
 
     d = strcmp(da->driver, db->driver);
@@ -112,10 +114,10 @@ static int
 dv_sort(const void *a, const void *b) {
     if (f_sort) {
 	if (strcmp(f_sort, "ident") == 0)
-	    return dv_sort_ident((const DISK *) a, (const DISK *) b);
+	    return dv_sort_ident((const DRIVE *) a, (const DRIVE *) b);
     }
     
-    return dv_sort_devpath((const DISK *) a, (const DISK *) b);
+    return dv_sort_devpath((const DRIVE *) a, (const DRIVE *) b);
 }
 
 
@@ -381,7 +383,7 @@ nvme_identify(int fd,
     struct nvme_pt_command pt;
     struct nvme_controller_data cdata;
     char *ident = NULL;
-    DISK *dp;
+    DRIVE *dp;
     char *cp;
     int i, j;
     char pbuf[MAXPATHLEN];
@@ -478,7 +480,7 @@ do_device(char *daname) {
     int fd, i, rc;
     char *ident = NULL;
     struct cam_device *cam;
-    DISK *dp;
+    DRIVE *dp;
     char path[2048];
     char idbuf[DISK_IDENT_SIZE];
     char pnbuf[MAXPATHLEN];
@@ -490,7 +492,7 @@ do_device(char *daname) {
 
     /* Increase size of drive table */
     if (dc >= ds) {
-	dv = realloc(dv, (ds += 1024)*sizeof(DISK));
+	dv = realloc(dv, (ds += 1024)*sizeof(DRIVE));
 	if (!dv)
 	    return -1;
     }
@@ -659,40 +661,46 @@ do_device(char *daname) {
 		strdupcat(&dp->driver, drvbuf);
 	    }
 	}
+
+	if (f_temp) {
+	    rc = cam_drvtemp(cam, &temp_c);
+	    if (rc > 0) {
+		char buf[256];
+		
+		sprintf(buf, "%.1f", temp_c);
+		dp->temp = strdup(buf);
+	    } else if (rc == 0)
+		dp->temp = strdup("-");
+	    else
+		dp->temp = NULL;
+	}
+
+	if (f_smart) {
+	    rc = cam_smart_status(cam, &smart);
+	    if (rc > 0) {
+		dp->smart = strdup(smart_health_name(smart.health));
+	    } else if (rc == 0)
+		dp->smart = strdup("-");
+	    else
+		dp->smart = NULL;
+	}
 	
-	rc = cam_drvtemp(cam, &temp_c);
-	if (rc > 0) {
-	    char buf[256];
-
-	    sprintf(buf, "%.1f", temp_c);
-	    dp->temp = strdup(buf);
-	} else if (rc == 0)
-	    dp->temp = strdup("-");
-	else
-	    dp->temp = NULL;
-
-	rc = cam_smart_status(cam, &smart);
-	if (rc > 0) {
-	    dp->smart = strdup(smart_health_name(smart.health));
-	} else if (rc == 0)
-	    dp->smart = strdup("-");
-	else
-	    dp->smart = NULL;
-
-	if (strcmp(cam->given_dev_name, "da") == 0) {
-	    struct scsi_tests_result result;
-
-	    rc = scsi_tests_read_last(cam, &result);
-	    if (rc >= 0) {
-		dp->tests = strdup(scsi_tests_state_name(result.state));
-		if (result.power_on_hours > 0) {
-		    char pbuf[256];
-		    
-		    sprintf(pbuf, "%u", result.power_on_hours);
-		    dp->poweron = strdup(pbuf);
-		}
-	    } else
-		dp->tests = NULL;
+	if (f_tests) {    
+	    if (strcmp(cam->given_dev_name, "da") == 0) {
+		struct scsi_tests_result result;
+		
+		rc = scsi_tests_read_last(cam, &result);
+		if (rc >= 0) {
+		    dp->tests = strdup(scsi_tests_state_name(result.state));
+		    if (result.power_on_hours > 0) {
+			char pbuf[256];
+			
+			sprintf(pbuf, "%u", result.power_on_hours);
+			dp->poweron = strdup(pbuf);
+		    }
+		} else
+		    dp->tests = NULL;
+	    }
 	}
 	
 	cam_close_device(cam);
@@ -770,7 +778,7 @@ main(int argc,
     int poweronlen = 7;
     
 
-    dv = calloc((ds = 1024), sizeof(DISK));
+    dv = calloc((ds = 1024), sizeof(DRIVE));
     if (!dv) {
 	fprintf(stderr, "%s: Error: calloc: %s\n",
 		argv[0], strerror(errno));
@@ -810,6 +818,17 @@ main(int argc,
 		} else
 		    f_debug++;
 		goto NextArg;
+	    case 'F':
+		if (argv[i][j+1]) {
+		    f_sep = strdup(argv[i]+j+1);
+		    goto NextArg;
+		} else if (argv[i+1] && argv[i+1][0] != '-') {
+		    f_sep = strdup(argv[++i]);
+		    goto NextArg;
+		} else {
+		    f_sep = " : ";
+		}
+		break;
 	    case 'v':
 		f_verbose++;
 		if (f_verbose > 3)
@@ -823,6 +842,7 @@ main(int argc,
 		break;
 	    case 's':
 		f_smart++;
+		f_tests++;
 		break;
 	    case 'd':
 		f_driver++;
@@ -839,6 +859,7 @@ main(int argc,
 	f_temp++;
 	if (f_verbose > 1) {
 	    f_smart++;
+	    f_tests++;
 	    if (f_verbose > 2) {
 		f_poweron++;
 	    }
@@ -914,36 +935,51 @@ main(int argc,
     qsort(&dv[0], dc, sizeof(dv[0]), dv_sort);
 
     if (isatty(1)) {
-	printf("\033[1;4m%*s : %-*s : %-*s : %-*s : %-*s : %-*s",
+	printf("\033[1;4m%*s%s%-*s%s%-*s%s%-*s%s%-*s%s%-*s",
 	       numlen, "#",
+	       f_sep,
 	       vendorlen, "VENDOR",
+	       f_sep,
 	       productlen, "PRODUCT",
+	       f_sep,
 	       revisionlen, "REV.",
+	       f_sep,
 	       identlen, "IDENT",
+	       f_sep,
 	       sizelen, "SIZE");
 
 	if (f_temp)
-	    printf(" : %*s", 
+	    printf("%s%*s",
+		   f_sep,
 		   templen, "TEMP");
 
 	if (f_smart)
-	    printf(" : %-*s : %-*s",
-		   smartlen, "SMART",
+	    printf("%s%-*s",
+		   f_sep,
+		   smartlen, "SMART");
+
+	if (f_tests)
+	    printf("%s%-*s",
+		   f_sep,
 		   testslen, "TESTS");
 
 	if (f_poweron)
-	    printf(" : %*s",
+	    printf("%s%*s",
+		   f_sep,
 		   poweronlen, "POWERON");
 	
-	printf(" : %-*s", 
+	printf("%s%-*s",
+	       f_sep,
 	       danameslen, "NAMES");
 	
 	if (f_phys) {
-	    printf(" : %-*s",
+	    printf("%s%-*s",
+		   f_sep,
 		   physlen, "PHYS");
 	}
 	if (f_driver) {
-	    printf(" : %-*s : %-*s",
+	    printf("%s%-*s : %-*s",
+		   f_sep,
 		   drvlen, "DRV.",
 		   pathlen, "PATH");
 	}
@@ -951,36 +987,51 @@ main(int argc,
     }
 
     for (i = 0; i < dc; i++) {
-	printf("%*u : %-*s : %-*s : %-*s : %-*s : %-*s",
+	printf("%*u%s%-*s%s%-*s%s%-*s%s%-*s%s%-*s",
 	       numlen, i+1,
+	       f_sep,
 	       vendorlen, dv[i].vendor ? dv[i].vendor : "?",
+	       f_sep,
 	       productlen, dv[i].product ? dv[i].product : "?",
+	       f_sep,
 	       revisionlen, dv[i].revision ? dv[i].revision : "?",
+	       f_sep,
 	       identlen, dv[i].ident,
+	       f_sep,
 	       sizelen, dv[i].size ? dv[i].size : "?");
 
 	if (f_temp)
-	    printf(" : %*s", 
+	    printf("%s%*s",
+		   f_sep,
 		   templen, dv[i].temp ? dv[i].temp : "?");
 
 	if (f_smart) 
-	    printf(" : %-*s : %-*s",
-		   smartlen, dv[i].smart ? dv[i].smart : "?",
+	    printf("%s%-*s",
+		   f_sep,
+		   smartlen, dv[i].smart ? dv[i].smart : "?");
+		   
+	if (f_tests) 
+	    printf("%s%-*s",
+		   f_sep,
 		   testslen, dv[i].tests ? dv[i].tests : "?");
 
 	if (f_poweron)
-	    printf(" : %*s",
+	    printf("%s%*s",
+		   f_sep,
 		   poweronlen, dv[i].poweron ? dv[i].poweron : "?");
 	
-	printf(" : %-*s", 
+	printf("%s%-*s",
+	       f_sep,
 	       danameslen, dv[i].danames);
 	       
 	if (f_phys) {
-	    printf(" : %.*s",
+	    printf("%s%.*s",
+		   f_sep,
 		   physlen, dv[i].phys ? dv[i].phys : "");
 	}
 	if (f_driver) {
-	    printf(" : %-*s : ",
+	    printf("%s%-*s : ",
+		   f_sep,
 		   drvlen, dv[i].driver);
 	    if (dv[i].path)
 		p_strip(dv[i].path);
