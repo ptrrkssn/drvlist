@@ -1,7 +1,7 @@
 /*
- * temp.h
+ * utils.c
  *
- * Code to read drive temperature from SAS/SCSI (da), SATA (ada) and NVME (nda) drives
+ * Common util functions
  *
  * Copyright (c) 2026 Peter Eriksson <pen@lysator.liu.se>
  *
@@ -33,17 +33,54 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifndef DRVLIST_TEMP_H
-#define DRVLIST_TEMP_H 1
+#ifndef DRVLIST_UTILS_H
+#define DRVLIST_UTILS_H 1
 
-#include <cam/cam.h>
+#include <stdint.h>
+#include <sys/types.h>
+
+extern uint16_t
+get_be16(const uint8_t *p);
+
+extern uint16_t
+get_le16(const uint8_t *p);
+
+extern uint32_t
+get_be32(const uint8_t *p);
+
+extern uint32_t
+get_le32(const uint8_t *p);
+
+extern uint64_t
+get_be64(const uint8_t *p);
+
+extern uint64_t
+get_le64(const uint8_t *p);
+
+
+extern void
+put_be16(uint8_t *p,
+	 const uint16_t v);
+
+
+extern char *
+size2str(size_t size);
+
+extern char *
+strdupget(const char *s,
+	  size_t maxlen);
+
+extern char *
+strdupcat(char **old,
+	  char *add);
 
 extern int
-cam_drvtemp(struct cam_device *dev,
-	double *temp_c);
+strtrim(char *str,
+	int *len);
 
 extern int
-drvtemp(const char *path,
-	double *temp_c);
+strntrim(char *str,
+	 int *len,
+	 int max);
 
 #endif

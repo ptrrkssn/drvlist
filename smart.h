@@ -39,28 +39,11 @@
 #include <stdint.h>
 #include <cam/cam.h>
 
-/*
- * Health result returned by the functions below.
- *
- * UNKNOWN means that the command failed, the requested health facility
- * was unavailable, or the response could not be interpreted.
- */
-enum smart_health {
-    SMART_HEALTH_UNKNOWN = -1,
-    SMART_HEALTH_PASSED  = 0,
-    SMART_HEALTH_WARNING = 1,
-    SMART_HEALTH_FAILED  = 2
-};
-
-enum smart_protocol {
-    SMART_PROTOCOL_ATA = 0,
-    SMART_PROTOCOL_SCSI = 1,
-    SMART_PROTOCOL_NVME = 2
-};
+#include "health.h"
 
 struct smart_result {
-    enum smart_health health;
-    enum smart_protocol protocol;
+    enum health_smart_status health;
+    enum health_protocol protocol;
     
     /*
      * Protocol-specific detail:
@@ -79,14 +62,12 @@ struct smart_result {
      */
     uint8_t detail1;
     uint8_t detail2;
+    uint8_t temp_c;
+    uint64_t power_on_hours;
 };
 
+extern void
+smart_result_init(struct smart_result *result);
 
-extern int
-cam_smart_status(struct cam_device *dev,
-		 struct smart_result *result);
-
-extern const char *
-smart_health_name(enum smart_health health);
 
 #endif

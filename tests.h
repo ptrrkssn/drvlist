@@ -36,17 +36,13 @@
 #ifndef DRVLIST_TESTS_H
 #define DRVLIST_TESTS_H 1
 
-enum scsi_tests_state {
-    SCSI_TESTS_UNKNOWN = -1,
-    SCSI_TESTS_NONE = 0,
-    SCSI_TESTS_PASSED,
-    SCSI_TESTS_FAILED,
-    SCSI_TESTS_ABORTED,
-    SCSI_TESTS_IN_PROGRESS
-};
+#include <stdint.h>
 
-struct scsi_tests_result {
-    enum scsi_tests_state state;
+#include "health.h"
+
+
+struct tests_result {
+    enum health_tests_status state;
 
     uint16_t parameter_code;
     uint8_t test_code;
@@ -55,22 +51,29 @@ struct scsi_tests_result {
     uint16_t power_on_hours;
     uint64_t failing_lba;
 
-    uint8_t sense_key;
-    uint8_t asc;
-    uint8_t ascq;
+    union {
+	struct {
+	    uint8_t sense_key;
+	    uint8_t asc;
+	    uint8_t ascq;
+	    struct {
+		uint64_t done;
+		uint64_t passed;
+		uint64_t failed;
+	    } tests;
+	} scsi;
+    } details;
 };
 
-extern const char *
-scsi_tests_state_name(enum scsi_tests_state state);
 
-extern const char *
-scsi_tests_result_name(uint8_t code);
-
-extern enum scsi_tests_state
+extern enum tests_state
 classify_tests_result(uint8_t code);
 
 extern int
-scsi_tests_read_last(struct cam_device *dev,
-		     struct scsi_tests_result *result);
+tests_read_scsi(struct cam_device *dev,
+		struct tests_result *result);
+
+extern void
+tests_result_init(struct tests_result *result);
 
 #endif
