@@ -36,32 +36,34 @@
 
 #include <cam/cam.h>
 
-#include "health.h"
-#include "smart.h"
-#include "tests.h"
-
-extern int
-ata_drive_temperature(struct cam_device *dev,
-		      double *temperature_c);
-
-extern int
-ata_smart_status(struct cam_device *dev,
-		 struct smart_result *result);
-
-extern int
-ata_tests_status(struct cam_device *dev,
-		 struct tests_result *result);
+#include "drive.h"
 
 extern int
 ata_identify(struct cam_device *cdb,
 	     char **vendor,
 	     char **model,
-	     char **revision);
+	     char **revision,
+	     int *have_selftest);
+
+
+
+
+extern int
+ata_drive_temperature(struct cam_device *dev,
+		      DRIVE *dp);
+
+extern int
+ata_smart_status(struct cam_device *dev,
+		 DRIVE *dp);
+
+
+extern int
+ata_tests_status(struct cam_device *dev,
+		 DRIVE *dp);
 
 
 extern int
 ata_health_status(struct cam_device *dev,
-		  struct health_result *result,
-		  int have_selftest);
+		  DRIVE *dp);
 
 #endif

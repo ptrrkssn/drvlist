@@ -35,9 +35,8 @@
 #define DRVLIST_NVME_H 1
 
 #include <cam/cam.h>
+#include "drive.h"
 
-#include "smart.h"
-#include "tests.h"
 
 extern int
 nvme_identify_fd(int fd,
@@ -50,20 +49,19 @@ nvme_identify_fd(int fd,
 
 extern int
 nvme_drive_temperature(struct cam_device *dev,
-		       double *temperature_c);
+		       DRIVE *dp);
 
 extern int
 nvme_smart_status(struct cam_device *dev,
-		  struct smart_result *result);
+		  DRIVE *dp);
 
 extern int
 nvme_tests_status(struct cam_device *dev,
-		  struct tests_result *result);
+		  DRIVE *dp);
 
 
 extern int
 nvme_health_status(struct cam_device *dev,
-		   struct health_result *result,
-		   int have_selftest);
+		   DRIVE *dp);
 
 #endif

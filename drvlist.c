@@ -58,9 +58,7 @@
 #include "nvme.h"
 
 #include "utils.h"
-
-#include "smart.h"
-#include "tests.h"
+#include "drive.h"
 
 
 char *argv0 = "drvlist";
@@ -73,6 +71,7 @@ int f_smart = 0;
 int f_tests = 0;
 int f_poweron = 0;
 int f_driver = 0;
+int f_endurance = 0;
 int f_multipath = 0;
 int f_maxwidth = 22;
 
@@ -80,76 +79,25 @@ char *f_sep = " : ";
 char *f_sort = NULL;
 
 
-typedef struct {
-    char *ident;
-    char *danames;
-    char *vendor;
-    char *product;
-    char *revision;
-    char *driver;
-    char *path;
-    char *phys;
-    char *size;
-    char *temp;
-    char *smart;
-    char *tests;
-    char *poweron;
-} DRIVE;
-
-#define MAXDRIVE 2048
-
-int dc = 0;
-int ds = 0;
-DRIVE *dv;
-
-
-static int
-dv_sort_ident(const DRIVE *da, const DRIVE *db) {
-    return strcmp(da->ident, db->ident);
-}
-
-static int
-dv_sort_devpath(const DRIVE *da, const DRIVE *db) {
-    int d;
-
-    d = strcmp(da->driver, db->driver);
-    if (d)
-	return d;
-    
-    return strcmp(da->path, db->path);
-}
-
-static int
-dv_sort(const void *a, const void *b) {
-    if (f_sort) {
-	if (strcmp(f_sort, "ident") == 0)
-	    return dv_sort_ident((const DRIVE *) a, (const DRIVE *) b);
-    }
-    
-    return dv_sort_devpath((const DRIVE *) a, (const DRIVE *) b);
-}
-
-
 
 
 int
 get_health_status(struct cam_device *dev,
-		  struct health_result *result,
-		  int have_selftest) {
+		  DRIVE *dp) {
     int rc;
 
     
-    if (!dev || !result) {
+    if (!dev || !dp) {
 	errno = EINVAL;
 	return -1;
     }
 
     if (strcmp(dev->given_dev_name, "da") == 0)
-	rc = scsi_health_status(dev, result, have_selftest);
+	rc = scsi_health_status(dev, dp);
     else if (strcmp(dev->given_dev_name, "ada") == 0)
-	rc = ata_health_status(dev, result, have_selftest);
+	rc = ata_health_status(dev, dp);
     else if (strcmp(dev->given_dev_name, "nda") == 0)
-	rc = nvme_health_status(dev, result, have_selftest);
+	rc = nvme_health_status(dev, dp);
     else {
 	errno = ENOENT;
 	rc = -1;
@@ -158,80 +106,6 @@ get_health_status(struct cam_device *dev,
     return rc;
 }
 
-int
-get_drive_temperature(struct cam_device *dev,
-		      double *temp) {
-    int rc;
-    
-    
-    if (!dev || !temp) {
-	errno = EINVAL;
-	return -1;
-    }
-
-    if (strcmp(dev->given_dev_name, "da") == 0)
-	rc = scsi_drive_temperature(dev, temp);
-    else if (strcmp(dev->given_dev_name, "ada") == 0)
-	rc = ata_drive_temperature(dev, temp);
-    else if (strcmp(dev->given_dev_name, "nda") == 0)
-	rc = nvme_drive_temperature(dev, temp);
-    else {
-	errno = ENOENT;
-	rc = -1;
-    }
-
-    return rc;
-}
-
-int
-get_smart_status(struct cam_device *dev,
-		 struct smart_result *result) {
-    int rc;
-
-    
-    if (!dev || !result) {
-	errno = EINVAL;
-	return -1;
-    }
-
-    if (strcmp(dev->given_dev_name, "da") == 0)
-	rc = scsi_smart_status(dev, result);
-    else if (strcmp(dev->given_dev_name, "ada") == 0)
-	rc = ata_smart_status(dev, result);
-    else if (strcmp(dev->given_dev_name, "nda") == 0)
-	rc = nvme_smart_status(dev, result);
-    else {
-	errno = ENOENT;
-	rc = -1;
-    }
-
-    return rc;
-}
-
-int
-get_tests_result(struct cam_device *dev,
-		 struct tests_result *result) {
-    int rc;
-
-    
-    if (!dev || !result) {
-	errno = EINVAL;
-	return -1;
-    }
-
-    if (strcmp(dev->given_dev_name, "da") == 0)
-	rc = scsi_tests_status(dev, result);
-    else if (strcmp(dev->given_dev_name, "ada") == 0)
-	rc = ata_tests_status(dev, result);
-    else if (strcmp(dev->given_dev_name, "nda") == 0)
-	rc = nvme_tests_status(dev, result);
-    else {
-	errno = ENOENT;
-	rc = -1;
-    }
-
-    return rc;
-}
 
 
 
@@ -247,15 +121,20 @@ do_device(char *dname) {
     char drvbuf[MAXPATHLEN];
     char physbuf[MAXPATHLEN];
     off_t msize = 0;
-    struct health_result health;
     int have_selftest = 0;
     
 
+    if (f_debug)
+	fprintf(stderr, "[%s]\n", dname);
+    
     /* Increase size of drive table */
     if (dc >= ds) {
 	dv = realloc(dv, (ds += 1024)*sizeof(DRIVE));
-	if (!dv)
-	    return -1;
+	if (!dv) {
+	    fprintf(stderr, "%s: Error: Memory allocation failure: %s\n",
+		    argv0, strerror(errno));
+	    exit(1);
+	}
     }
 
     
@@ -277,18 +156,16 @@ do_device(char *dname) {
 		argv0, path, path, strerror(errno));
     }
 
-    if (fd >= 0) {
-	/* Get drive size */
-	if (ioctl(fd, DIOCGMEDIASIZE, &msize) < 0) {
-	    fprintf(stderr, "%s: Error: %s: ioctl(DIOCGMEDIASIZE): %s\n",
-		    argv0, path, strerror(errno));
-	}
+    /* Get drive size */
+    if (ioctl(fd, DIOCGMEDIASIZE, &msize) < 0) {
+	fprintf(stderr, "%s: Error: %s: ioctl(DIOCGMEDIASIZE): %s\n",
+		argv0, path, strerror(errno));
     }
 
     
     cam = cam_open_device(path, O_RDWR);
     if (cam) {
-	if (f_debug) {
+	if (f_debug > 1) {
 	    fprintf(stderr, "*** CAM Device: path=%s serial=%*s dev=%s%u pass=%s%u sim=%s%u\n",
 		    path,
 		    cam->serial_num_len, cam->serial_num,
@@ -335,14 +212,16 @@ do_device(char *dname) {
 		free(ident);
 
 	    /* Add alternate names */
-	    strdupcat(&dp->danames, dname);
+	    strdupcat(&dp->names, dname);
 	    strdupcat(&dp->path, pnbuf);
 	    strdupcat(&dp->driver, drvbuf);
 	} else {
 	    /* New drive */
+
+	    drive_init(dp);
 	    
 	    dp->ident = ident;
-	    dp->danames = strdup(dname);
+	    dp->names = strdup(dname);
 	    dp->path = strdup(pnbuf);
 	    if (msize > 0)
 		dp->size = size2str(msize);
@@ -352,10 +231,11 @@ do_device(char *dname) {
 		/* NVME device */
 		char npath[1024];
 
+		dp->type = DRIVE_TYPE_NVME;
+
 		/* Check to make sure it is a local NVME controller */
 		if (strcmp(cam->sim_name, "nvme") == 0) {
 		    int nfd;
-		    int have_selftest = 0;
 		    
 		    sprintf(npath, "/dev/%s%u", cam->sim_name, cam->sim_unit_number);
 		    
@@ -367,6 +247,7 @@ do_device(char *dname) {
 			return -1;
 		    }
 		    nvme_identify_fd(nfd, &dp->vendor, &dp->product, &dp->revision, NULL, &dp->phys, &have_selftest);
+		    dp->flags.have_selftest = have_selftest;
 		    close(nfd);
 		    
 		} else {
@@ -380,7 +261,7 @@ do_device(char *dname) {
 		/* DA (SAS/SCSI) or ADA (SATA) drive */
 		char *cp;
 
-		have_selftest = 1;
+		
 		/* Get physical path (does not work on NDA/NVME */
 		physbuf[0] = '\0';
 		if (f_phys) {
@@ -391,12 +272,19 @@ do_device(char *dname) {
 		    dp->phys = strdup(physbuf);
 		}
 
-		
 		if (strcmp(cam->given_dev_name, "ada") == 0) {
-		    /* SATA device */
-		    ata_identify(cam, &dp->vendor, &dp->product, &dp->revision);
-		} 
-
+		    /* ATA device */
+		    ata_identify(cam, &dp->vendor, &dp->product, &dp->revision, &have_selftest);
+		    dp->flags.have_selftest = have_selftest;
+		    dp->type = DRIVE_TYPE_ATA;
+		}  else if (strcmp(cam->given_dev_name, "da") == 0) {
+		    if (scsi_drive_is_satl(cam)) {
+			dp->type = DRIVE_TYPE_SATL;
+		    } else {
+			dp->type = DRIVE_TYPE_SCSI; /* Check for USB/MMC */
+		    }
+		}
+		
 		/* Probably only da (SAS/SCSI) drives */
 		if (!dp->vendor && cam->inq_data.vendor[0])
 		    dp->vendor = strdupget(cam->inq_data.vendor, sizeof(cam->inq_data.vendor));
@@ -433,48 +321,55 @@ do_device(char *dname) {
 	    }
 
 
-	    rc = get_health_status(cam, &health, have_selftest);
+	    rc = get_health_status(cam, dp);
 	    if (rc > 0) {
 		char buf[256];
 		
-		if (health.drive.temperature > 0) {
-		    sprintf(buf, "%.1f", health.drive.temperature);
+		if (dp->raw.temperature != DRIVE_NO_TEMPERATURE) {
+		    sprintf(buf, "%u", dp->raw.temperature);
 		    dp->temp = strdup(buf);
 		}
 
-		if (health.drive.power_on_hours > 0) {
-		    sprintf(buf, "%zu", health.drive.power_on_hours);
+		if (dp->raw.power_on_hours != DRIVE_NO_POWER_ON_HOURS) {
+		    sprintf(buf, "%zu", dp->raw.power_on_hours);
 		    dp->poweron = strdup(buf);
 		}
-		
-		dp->smart = strdup(health_smart_status2str(health.smart.status));
-		dp->tests = strdup(health_tests_status2str(health.tests.status));
-	    }
 
+		if (dp->raw.endurance_used != DRIVE_NO_ENDURANCE_USED) {
+		    sprintf(buf, "%d", dp->raw.endurance_used);
+		    dp->used = strdup(buf);
+		}
+		
+		dp->smart = strdup(drive_smart_status2str(dp->raw.smart_status));
+		dp->tests = strdup(drive_selftest_status2str(dp->raw.selftest_status));
+	    }
+	    dc++;
 	} 
 	
 	cam_close_device(cam);
 	close(fd);
-	dc++;
 	return 0;
     } else {
 	/* Non-CAM device */
 
-	fprintf(stderr, "*** %s: Non-CAM Device\n", path);
+	if (f_debug > 1)
+	    fprintf(stderr, "*** %s: Non-CAM Device\n", path);
 
 	memset(idbuf, 0, sizeof(idbuf));
 	if (ioctl(fd, DIOCGIDENT, idbuf) < 0) {
 	    fprintf(stderr, "%s: Error: %s: ioctl(DIOCGIDENT): %s",
 		    argv0, path, strerror(errno));
-	} else
+	    exit(1);
+	} else {
 	    ident = strdupget(idbuf, sizeof(idbuf));
-	
-	if (!ident) {
-	    close(fd);
-	    return 1;
+	    if (!ident) {
+		fprintf(stderr, "%s: Error: %s: Memory allocation: %s\n",
+			argv0, path, strerror(errno));
+		exit(1);
+	    }
 	}
 	
-	if (ident && f_multipath) {
+	if (f_multipath) {
 	    for (i = 0; i < dc && strcmp(dv[i].ident, ident); i++)
 		;
 	} else
@@ -492,14 +387,14 @@ do_device(char *dname) {
 	if (i >= dc) {
 	    /* New device */
 	    dp->ident = ident;
-	    dp->danames = strdup(dname);
+	    dp->names = strdup(dname);
 	    dp->phys = strdup(physbuf);
 	    if (msize > 0)
 		dp->size = size2str(msize);
 	    ++dc;
 	} else {
 	    free(ident);
-	    strdupcat(&dp->danames, dname);
+	    strdupcat(&dp->names, dname);
 	}
 
     }
@@ -525,7 +420,7 @@ p_field(const char *value,
 int
 main(int argc,
      char *argv[]) {
-    char *daname;
+    char *name;
     char *buf, *bp;
     size_t bsize = 0;
     int i, j;
@@ -534,7 +429,7 @@ main(int argc,
     int vendorlen = 6;
     int productlen = 7;
     int revisionlen = 4;
-    int danameslen = 5;
+    int nameslen = 5;
     int drvlen = 3;
     int pathlen = 4;
     int physlen = 4;
@@ -544,6 +439,7 @@ main(int argc,
     int smartlen = 5;
     int testslen = 5;
     int poweronlen = 7;
+    int usedlen = 4;
 
 
     argv0 = argv[0];
@@ -561,69 +457,91 @@ main(int argc,
 	    case 'h':
 		printf("Usage: %s [-vpts] [-S<sort>] [-W<maxwidth>] [<devices>]\n", argv[0]);
 		exit(0);
+		
 	    case 'S':
-		if (argv[i][j+1])
+		if (argv[i][j+1]) {
 		    f_sort = strdup(argv[i]+j+1);
-		else if (argv[i+1][0] && argv[i+1][0] != '-')
+		    goto NextArg;
+		}
+
+		if (argv[i+1] && argv[i+1][0] != '-') {
 		    f_sort = strdup(argv[++i]);
-		else {
-		    fprintf(stderr, "%s: Error: Missing value for -S\n", argv[0]);
-		    exit(1);
+		    goto NextArg;
 		}
-		goto NextArg;
+
+		fprintf(stderr, "%s: Error: Missing value for -S\n", argv[0]);
+		exit(1);
+		
 	    case 'W':
-		if (argv[i][j+1] && sscanf(argv[i]+j+1, "%d", &f_maxwidth) != 1) {
-		    if (argv[i+1][0] && argv[i+1][0] != '-' && sscanf(argv[i+1], "%d", &f_maxwidth) != 1) {
-			fprintf(stderr, "%s: Error: Missing value for -W\n", argv[0]);
-			exit(1);
-		    }
-		}
-		goto NextArg;
+		if (argv[i][j+1] && sscanf(argv[i]+j+1, "%d", &f_maxwidth) == 1)
+		    goto NextArg;
+		    
+		if (argv[i+1] && argv[i+1][0] != '-' && sscanf(argv[i+1], "%d", &f_maxwidth) == 1)
+		    goto NextArg;
+		
+		fprintf(stderr, "%s: Error: Missing value for -W\n", argv[0]);
+		exit(1);
+		
 	    case 'D':
-		if (argv[i][j+1] && sscanf(argv[i]+j+1, "%d", &f_debug) != 1) {
-		    if (argv[i+1][0] && argv[i+1][0] != '-' && sscanf(argv[i+1], "%d", &f_debug) != 1) {
-			fprintf(stderr, "%s: Error: Missing value for -D\n", argv[0]);
-			exit(1);
-		    }
-		} else
-		    f_debug++;
-		goto NextArg;
+		if (argv[i][j+1] && sscanf(argv[i]+j+1, "%d", &f_debug) == 1)
+		    goto NextArg;
+		
+		if (argv[i+1] && argv[i+1][0] != '-' && sscanf(argv[++i], "%d", &f_debug) == 1)
+		    goto NextArg;
+		
+		f_debug++;
+		break;
+		
 	    case 'F':
 		if (argv[i][j+1]) {
 		    f_sep = strdup(argv[i]+j+1);
 		    goto NextArg;
-		} else if (argv[i+1] && argv[i+1][0] != '-') {
+		}
+		
+		if (argv[i+1] && argv[i+1][0] != '-') {
 		    f_sep = strdup(argv[++i]);
 		    goto NextArg;
-		} else {
-		    f_sep = " : ";
 		}
+		
+		f_sep = " : ";
 		break;
+		
 	    case 'v':
 		f_verbose++;
 		if (f_verbose > 2)
 		    f_maxwidth = 0;
 		break;
+		
 	    case 'w':
 		f_maxwidth = 0;
 		break;
+		
 	    case 'm':
 		f_multipath++;
 		break;
+		
 	    case 'p':
 		f_phys++;
 		f_maxwidth = 0;
 		break;
+		
 	    case 't':
 		f_temp++;
 		break;
+		
 	    case 's':
 		f_smart++;
 		f_tests++;
 		break;
+		
 	    case 'd':
 		f_driver++;
 		break;
+		
+	    case 'e':
+		f_endurance++;
+		break;
+		
 	    default:
 		fprintf(stderr, "%s: Error: -%c: Invalid switch\n",
 			argv[0], argv[i][j]);
@@ -640,9 +558,12 @@ main(int argc,
 	    if (f_verbose > 2) {
 		f_poweron++;
 		if (f_verbose > 3) {
-		    f_driver++;
+		    f_endurance++;
 		    if (f_verbose > 4) {
-			f_phys++;
+			f_driver++;
+			if (f_verbose > 5) {
+			    f_phys++;
+			}
 		    }
 		}
 	    }
@@ -670,13 +591,13 @@ main(int argc,
 	}
 
 	bp = buf;
-	while ((daname = strsep(&bp, " ")) != NULL) {
-	    rc = do_device(daname);
+	while ((name = strsep(&bp, " ")) != NULL) {
+	    rc = do_device(name);
 	    if (rc < 0) {
-		fprintf(stderr, "%s: Error: %s: Unable to access: %s\n", argv[0], daname, strerror(errno));
+		fprintf(stderr, "%s: Error: %s: Unable to access: %s\n", argv[0], name, strerror(errno));
 		exit(1);
 	    } else if (rc > 0) {
-		fprintf(stderr, "%s: Error: %s: Skipped\n", argv[0], daname);
+		fprintf(stderr, "%s: Error: %s: Skipped\n", argv[0], name);
 	    }
 	}
 
@@ -703,7 +624,7 @@ main(int argc,
 	strntrim(dv[i].vendor, &vendorlen, f_maxwidth);
 	strntrim(dv[i].product, &productlen, f_maxwidth);
 	strntrim(dv[i].revision, &revisionlen, f_maxwidth);
-	strntrim(dv[i].danames, &danameslen, f_maxwidth);
+	strntrim(dv[i].names, &nameslen, f_maxwidth);
 	strntrim(dv[i].driver, &drvlen, f_maxwidth);
 	strntrim(dv[i].path, &pathlen, f_maxwidth);
 	strntrim(dv[i].phys, &physlen, f_maxwidth);
@@ -712,10 +633,11 @@ main(int argc,
 	strntrim(dv[i].smart, &smartlen, f_maxwidth);
 	strntrim(dv[i].tests, &testslen, f_maxwidth);
 	strntrim(dv[i].poweron, &poweronlen, f_maxwidth);
+	strntrim(dv[i].used, &usedlen, f_maxwidth);
     }
 
     numlen = (int) (log10(dc)+1);
-    qsort(&dv[0], dc, sizeof(dv[0]), dv_sort);
+    qsort(&dv[0], dc, sizeof(dv[0]), drive_sort);
 
     if (isatty(1)) {
 	p_field("#", numlen, "\033[1;4m");
@@ -734,10 +656,14 @@ main(int argc,
 	if (f_tests)
 	    p_field("TESTS", -testslen, f_sep);
 
+	if (f_endurance)
+	    p_field("USED", usedlen, f_sep);
+
 	if (f_poweron)
 	    p_field("POWERON", poweronlen, f_sep);
 
-	p_field("NAMES", -danameslen, f_sep);
+	p_field("TYPE", 4, f_sep);
+	p_field("NAMES", -nameslen, f_sep);
 	
 	if (f_driver) {
 	    p_field("DRV.", -drvlen, f_sep);
@@ -767,10 +693,15 @@ main(int argc,
 	if (f_tests)
 	    p_field(dv[i].tests, -testslen, f_sep);
 
+	if (f_endurance)
+	    p_field(dv[i].used, usedlen, f_sep);
+
 	if (f_poweron)
 	    p_field(dv[i].poweron, poweronlen, f_sep);
 
-	p_field(dv[i].danames, -danameslen, f_sep);
+	p_field(drive_type2str(dv[i].type), 4, f_sep);
+		
+	p_field(dv[i].names, -nameslen, f_sep);
 	       
 	if (f_driver) {
 	    p_field(dv[i].driver, -drvlen, f_sep);

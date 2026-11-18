@@ -50,10 +50,6 @@
 #include <ctype.h>
 
 #include "utils.h"
-
-#include "smart.h"
-#include "tests.h"
-
 #include "nvme.h"
 
 
@@ -83,8 +79,7 @@ extern char *argv0;
  */
 int
 nvme_drive_temperature(struct cam_device *dev,
-		       double *temperature_c)
-{
+		       DRIVE *dp) {
     union ccb *ccb;
     uint8_t health_log[512];
     uint16_t kelvin;
@@ -93,7 +88,7 @@ nvme_drive_temperature(struct cam_device *dev,
     int saved_errno;
 
     
-    if (!dev || !temperature_c) {
+    if (!dev || !dp) {
         errno = EINVAL;
         return -1;
     }
@@ -179,8 +174,11 @@ nvme_drive_temperature(struct cam_device *dev,
         return 0;
     }
 
-    *temperature_c = (double)kelvin - 273.15;
+    dp->raw.temperature = kelvin - 273;
 
+    if (f_debug)
+	fprintf(stderr, "\tdrive_temperature: NVME HEALTH: temp = %u\n", dp->raw.temperature);
+    
     cam_freeccb(ccb);
     return 1;
 }
@@ -261,8 +259,6 @@ nvme_identify_fd(int fd,
     
     uint16_t oacs = get_le16((const uint8_t *) &cdata.oacs);
     if ((oacs & NVME_OACS_DEVICE_SELF_TEST) == 0) {
-	if (f_debug)
-	    fprintf(stderr, "*** NVME Does not support Device Self-Test\n");
 	*have_selftest = 0;
     } else
 	*have_selftest = 1;
@@ -285,7 +281,7 @@ nvme_identify_fd(int fd,
  */
 int
 nvme_smart_status(struct cam_device *dev,
-		  struct smart_result *result) {
+		  DRIVE *dp) {
     union ccb *ccb;
     uint8_t health_log[NVME_HEALTH_LOG_SIZE];
     struct nvme_health_information_page health;
@@ -293,9 +289,10 @@ nvme_smart_status(struct cam_device *dev,
     uint32_t numd;
     uint8_t critical_warning;
     int saved_errno;
+    uint64_t poh;
+    uint16_t temp_c;
+    
 
-
-    smart_result_init(result);
     memset(health_log, 0, sizeof(health_log));
     memset(&health, 0, sizeof(health));
 
@@ -359,22 +356,28 @@ nvme_smart_status(struct cam_device *dev,
 
     cam_freeccb(ccb);
 
-    critical_warning = health.critical_warning;
-#if 0
-    fprintf(stderr, "** NVME: temperature     = %.1f\n",
-	    (double) get_le16((const uint8_t *) &health.temperature) - 273.15);
-    fprintf(stderr, "** NVME: percentage used = %u\n", health.percentage_used);
-    fprintf(stderr, "** NVME: power_cycles    = %zu\n", get_le64((const uint8_t *) &health.power_cycles));
-    fprintf(stderr, "** NVME: power_on_hours  = %zu\n", get_le64((const uint8_t *) &health.power_on_hours));
-    fprintf(stderr, "** NVME: media errors    = %zu\n", get_le64((const uint8_t *) &health.media_errors));
-#endif
+    temp_c = get_le16((const uint8_t *) &health.temperature)-273;
+    dp->raw.temperature = temp_c;
+    if (f_debug)
+	fprintf(stderr, "\tNVME Health: temperature     = %u\n", temp_c);
+    
 
-    result->power_on_hours = get_le64((const uint8_t *) &health.power_on_hours);
-    result->detail1 = critical_warning;
+    critical_warning = health.critical_warning;
+
+    if (f_debug) {
+	fprintf(stderr, "\tNVME Health: percentage used = %u\n", health.percentage_used);
+	fprintf(stderr, "\tNVME Health: power_cycles    = %zu\n", get_le64((const uint8_t *) &health.power_cycles));
+	fprintf(stderr, "\tNVME Health: power_on_hours  = %zu\n", get_le64((const uint8_t *) &health.power_on_hours));
+	fprintf(stderr, "\tNVME Health: media errors    = %zu\n", get_le64((const uint8_t *) &health.media_errors));
+    }
+
+    dp->raw.endurance_used = health.percentage_used;
+    
+    poh = get_le64((const uint8_t *) &health.power_on_hours);
+    dp->raw.power_on_hours = poh;
 
     if (critical_warning == 0) {
-        result->health = HEALTH_SMART_PASSED;
-	result->protocol = HEALTH_PROTOCOL_NVME;
+        dp->raw.smart_status = DRIVE_SMART_PASSED;
         return (1);
     }
 
@@ -383,22 +386,21 @@ nvme_smart_status(struct cam_device *dev,
      * Spare, temperature, or backup warnings remain warnings.
      */
     if ((critical_warning & ((1U << 2) | (1U << 3))) != 0)
-        result->health = HEALTH_SMART_FAILED;
+        dp->raw.smart_status = DRIVE_SMART_FAILED;
     else
-        result->health = HEALTH_SMART_WARNING;
+        dp->raw.smart_status = DRIVE_SMART_WARNING;
 
-    result->protocol = HEALTH_PROTOCOL_NVME;
     return (1);
 }
 
 
 
-static enum health_tests_status
-classify_nvme_tests(uint8_t code)
+static enum drive_selftest_status
+classify_nvme_selftest(uint8_t code)
 {
     switch (code) {
     case 0x0:
-        return (HEALTH_TESTS_PASSED);
+        return (DRIVE_SELFTEST_PASSED);
 
     case 0x1:
     case 0x2:
@@ -407,17 +409,17 @@ classify_nvme_tests(uint8_t code)
     case 0x5:
     case 0x8:
     case 0x9:
-        return (HEALTH_TESTS_ABORTED);
+        return (DRIVE_SELFTEST_ABORTED);
 
     case 0x6:
     case 0x7:
-        return (HEALTH_TESTS_FAILED);
+        return (DRIVE_SELFTEST_FAILED);
 
     case 0xf:
-        return (HEALTH_TESTS_NONE);
+        return (DRIVE_SELFTEST_NONE);
 
     default:
-        return (HEALTH_TESTS_UNKNOWN);
+        return (DRIVE_SELFTEST_UNKNOWN);
     }
 }
 
@@ -426,29 +428,23 @@ classify_nvme_tests(uint8_t code)
  * already-opened CAM nda device.
  */
 int
-nvme_tests_status(struct cam_device *dev,
-		  struct tests_result *result)
-{
+nvme_selftest_status(struct cam_device *dev,
+		     DRIVE *dp) {
     union ccb *ccb;
     uint8_t buffer[NVME_SELF_TEST_LOG_SIZE];
     uint8_t current_operation;
     uint8_t status;
     uint8_t result_code;
-    uint8_t valid_diagnostic;
     uint32_t numd;
     uint32_t cam_status;
     int saved_errno;
 
-#if 0
-    fprintf(stderr, "** nvme_tests_status(%s%u): start\n",
-	    dev->given_dev_name, dev->given_unit_number);
-#endif
-    if (dev == NULL || result == NULL) {
+    
+    if (!dev || !dp) {
         errno = EINVAL;
         return (-1);
     }
 
-    tests_result_init(result);
     memset(buffer, 0, sizeof(buffer));
 
     ccb = cam_getccb(dev);
@@ -555,8 +551,7 @@ nvme_tests_status(struct cam_device *dev,
     current_operation = buffer[0] & 0x0f;
 
     if (current_operation != 0) {
-        result->state = HEALTH_TESTS_RUNNING;
-        result->test_code = current_operation;
+        dp->raw.selftest_status = DRIVE_SELFTEST_RUNNING;
 
         /*
          * Byte one is current completion percentage.
@@ -575,15 +570,13 @@ nvme_tests_status(struct cam_device *dev,
     status = buffer[NVME_SELF_TEST_HEADER_SIZE];
 
     result_code = status & 0x0f;
-    result->result_code = result_code;
-    result->test_code = (status >> 4) & 0x0f;
-    result->state = classify_nvme_tests(result_code);
+    dp->raw.selftest_status = classify_nvme_selftest(result_code);
 
 #if 0
     fprintf(stderr, "** result->state = %d\n", result->state);
 #endif
     
-    if (result->state == HEALTH_TESTS_NONE)
+    if (dp->raw.selftest_status == DRIVE_SELFTEST_NONE)
         return (0);
 
     /*
@@ -600,70 +593,40 @@ nvme_tests_status(struct cam_device *dev,
      * byte 25      status code
      * byte 26-27   vendor specific
      */
+#if 0
     valid_diagnostic =
         buffer[NVME_SELF_TEST_HEADER_SIZE + 2];
+#endif
 
-    /*
-     * Valid Diagnostic Information bit zero indicates that the
-     * failing LBA field is valid.
-     */
-    if ((valid_diagnostic & 0x01U) != 0) {
-        result->failing_lba =
-            get_le64(&buffer[
-			     NVME_SELF_TEST_HEADER_SIZE + 16]);
-    } else
-        result->failing_lba = UINT64_MAX;
-	
-
+#if 0
     /*
      * The NVMe field is 64-bit. The common structure retains only
      * 16 bits for compatibility with the SCSI/ATA display field.
      * Saturate instead of silently wrapping.
      */
-    {
-        uint64_t hours;
-
-        hours = get_le64(&buffer[
-				 NVME_SELF_TEST_HEADER_SIZE + 4]);
-
-        result->power_on_hours =
-            hours > UINT16_MAX ? UINT16_MAX : (uint16_t)hours;
-    }
-
+    poh = get_le64(&buffer[NVME_SELF_TEST_HEADER_SIZE + 4]);
+    dp->raw.power_on_hours = poh;
+#endif
+    
     return (1);
 }
 
 int
 nvme_health_status(struct cam_device *dev,
-		   struct health_result *result,
-		   int have_selftest) {
-    struct smart_result smart;
-    struct tests_result tests;
-    int rc1, rc2, rc3;
+		   DRIVE *dp) {
+    int rc1 = 0, rc2 = 0;
 
 
-
-    memset(result, 0, sizeof(*result));
-	   
-    rc1 = nvme_drive_temperature(dev, &result->drive.temperature);
-    if (rc1 < 0)
-	return rc1;
     
-    rc2 = nvme_smart_status(dev, &smart);
-    if (rc2 >= 0) {
-	result->protocol = HEALTH_PROTOCOL_SCSI;
-	result->smart.status = smart.health;
-	result->drive.power_on_hours = smart.power_on_hours;
-    }
+    if (f_debug)
+	fprintf(stderr, "  [smart & temp]\n");
+    rc1 = nvme_smart_status(dev, dp);
 
-    if (have_selftest) {
-	rc3 = nvme_tests_status(dev, &tests);
-	if (rc3 >= 0) {
-	    result->tests.status = tests.state;
-	    result->drive.power_on_hours = tests.power_on_hours;
-	}
-    } else
-	rc3 = 0;
+    if (dp->flags.have_selftest) {
+	if (f_debug)
+	    fprintf(stderr, "  [selftest]\n");
+	rc2 = nvme_selftest_status(dev, dp);
+    }
 
     if (rc1 > 0 || rc2 > 0)
 	return 1;

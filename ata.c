@@ -1,7 +1,7 @@
 /*
  * ata.c
  *
- * Code access SATA (ada) drives
+ * Code to access SATA (ada) drives
  *
  * Copyright (c) 2026 Peter Eriksson <pen@lysator.liu.se>
  *
@@ -49,11 +49,9 @@
 #include <string.h>
 
 #include "utils.h"
-
-#include "smart.h"
-#include "tests.h"
-
 #include "ata.h"
+
+extern int f_debug;
 
 /*
  * ATA SMART commands.
@@ -61,12 +59,12 @@
  * Local definitions avoid depending on the exact names exported by
  * <sys/ata.h> in a particular FreeBSD source version.
  */
-#define ATA_CMD_SMART                  0xB0
-#define ATA_SMART_READ_DATA            0xD0
-#define ATA_SMART_RETURN_STATUS        0xDA
+#define ATA_CMD_SMART                 0xB0
+#define ATA_SMART_READ_DATA           0xD0
+#define ATA_SMART_RETURN_STATUS       0xDA
 
-#define ATA_SMART_LBA_GOOD             0x00C24F00U
-#define ATA_SMART_LBA_FAILED           0x002CF400U
+#define ATA_SMART_LBA_GOOD            0x00C24F00U
+#define ATA_SMART_LBA_FAILED          0x002CF400U
 
 #define ATA_SMART_READ_LOG            0xd5
 #define ATA_SELF_TEST_LOG_ADDRESS     0x06
@@ -123,26 +121,6 @@ ata_smart_checksum_valid(const uint8_t *buffer, size_t length)
 }
 
 
-#if 0
-/*
- * Validate the checksum of a 512-byte ATA SMART READ DATA sector.
- *
- * The unsigned sum of all 512 bytes should have its low eight bits
- * equal to zero.
- */
-static int
-ata_smart_checksum_valid(const uint8_t data[SMART_DATA_SIZE]) {
-    unsigned int sum;
-    size_t i;
-
-    sum = 0;
-
-    for (i = 0; i < SMART_DATA_SIZE; i++)
-        sum += data[i];
-
-    return ((sum & 0xffU) == 0);
-}
-#endif
 
 /*
  * Extract a plausible temperature from a SMART attribute.
@@ -154,8 +132,9 @@ ata_smart_checksum_valid(const uint8_t data[SMART_DATA_SIZE]) {
  */
 static int
 ata_smart_attribute_temperature(const struct ata_smart_attribute *attr,
-				double *temperature_c) {
+				uint16_t *temp) {
     unsigned int value;
+
 
     value = attr->raw[0];
 
@@ -167,42 +146,30 @@ ata_smart_attribute_temperature(const struct ata_smart_attribute *attr,
      * could hide a genuinely overheating device.
      */
     if (value == 0 || value == 0xff || value > 125)
-        return (-1);
+        return -1;
 
-    *temperature_c = (double)value;
-    return (0);
+    *temp = value;
+    return 0;
 }
 
-/*
- * Read the temperature from a SATA drive exposed as /dev/adaN.
- *
- * Returns:
- *      0  success
- *     -1  failure, with errno set
- *
- * On success, *temperature_c receives the temperature in Celsius.
- */
-int
-ata_drive_temperature(struct cam_device *dev,
-		      double *temperature_c)
-{
-    union ccb *ccb;
-    struct ata_smart_attribute attr;
-    uint8_t data[SMART_DATA_SIZE];
-    uint32_t cam_status;
-    double fallback_temperature;
-    int have_fallback;
-    int saved_errno;
-    size_t i;
-    size_t offset;
 
+int
+ata_cmd_smart(struct cam_device *dev,
+	      uint8_t code,
+	      uint8_t *buf,
+	      size_t bufsize) {
+    union ccb *ccb;
+    uint32_t cam_status;
+    int saved_errno;
+    size_t got;
     
-    if (!temperature_c) {
+
+    if (!dev || !buf) {
         errno = EINVAL;
         return -1;
     }
 
-    memset(data, 0, sizeof(data));
+    memset(buf, 0, bufsize);
 
     ccb = cam_getccb(dev);
     if (ccb == NULL) {
@@ -220,8 +187,8 @@ ata_drive_temperature(struct cam_device *dev,
         NULL,                   /* completion callback */
         CAM_DIR_IN,             /* device to host */
         CAM_TAG_ACTION_NONE,    /* non-NCQ management command */
-        data,
-        sizeof(data),
+        buf,
+        bufsize,
         5000);                  /* timeout in milliseconds */
 
     /*
@@ -235,10 +202,10 @@ ata_drive_temperature(struct cam_device *dev,
      *     LBA high      = 0xc2
      */
     ata_28bit_cmd(&ccb->ataio,
-        ATA_CMD_SMART,
-        ATA_SMART_READ_DATA,
-        ATA_SMART_LBA,
-        1);
+		  ATA_CMD_SMART,
+		  code,
+		  ATA_SMART_LBA,
+		  1);
 
     if (cam_send_ccb(dev, ccb) < 0) {
         saved_errno = errno != 0 ? errno : EIO;
@@ -261,13 +228,31 @@ ata_drive_temperature(struct cam_device *dev,
         return -1;
     }
 
+    got = bufsize - ccb->ataio.resid;
     cam_freeccb(ccb);
+    
+    return got;
+}
 
-    if (!ata_smart_checksum_valid(data, sizeof(data))) {
-        errno = EIO;
-        return -1;
+
+int
+ata_drive_temperature(struct cam_device *dev,
+		      DRIVE *dp) {
+    uint8_t data[SMART_DATA_SIZE];
+    ssize_t len;
+    uint16_t fallback_temperature;
+    size_t offset, i;
+    int have_fallback;
+
+
+    len = ata_cmd_smart(dev, ATA_SMART_READ_DATA, data, sizeof(data));
+    if (len <= 0)
+	return len;
+    if (len != SMART_DATA_SIZE) {
+	errno = EIO;
+	return -1;
     }
-
+    
     /*
      * Prefer attribute 194, Temperature Celsius.
      *
@@ -278,37 +263,42 @@ ata_drive_temperature(struct cam_device *dev,
     fallback_temperature = 0.0;
 
     for (i = 0; i < SMART_ATTRIBUTE_COUNT; i++) {
-        offset = SMART_ATTRIBUTE_OFFSET +
-            i * SMART_ATTRIBUTE_SIZE;
-
-        memcpy(&attr, &data[offset], sizeof(attr));
-
-        if (attr.id == 0)
+	struct ata_smart_attribute *attr;
+	
+        offset = SMART_ATTRIBUTE_OFFSET + i * SMART_ATTRIBUTE_SIZE;
+	
+        attr = (struct ata_smart_attribute *) &data[offset];
+        if (attr->id == 0)
             continue;
-
-        if (attr.id == SMART_ATTR_TEMPERATURE_CELSIUS) {
-            if (ata_smart_attribute_temperature(&attr,
-                temperature_c) == 0)
+	
+        if (attr->id == SMART_ATTR_TEMPERATURE_CELSIUS) {
+            if (ata_smart_attribute_temperature(attr, &dp->raw.temperature) == 0) {
+		if (f_debug)
+		    fprintf(stderr, "\tATA SMART DATA: drive temperature=%u\n", dp->raw.temperature);
                 return 1;
+	    }
         }
-
-        if (attr.id == SMART_ATTR_AIRFLOW_TEMPERATURE &&
+	
+        if (attr->id == SMART_ATTR_AIRFLOW_TEMPERATURE &&
             !have_fallback) {
-            if (ata_smart_attribute_temperature(&attr,
-                &fallback_temperature) == 0)
+            if (ata_smart_attribute_temperature(attr, &fallback_temperature) == 0) {
+		if (f_debug)
+		    fprintf(stderr, "\tATA SMART DATA: airflow temperature=%u\n", fallback_temperature);
                 have_fallback = 1;
+	    }
         }
     }
-
+    
     if (have_fallback) {
-        *temperature_c = fallback_temperature;
+        dp->raw.temperature = fallback_temperature;
         return 1;
     }
-
+    
     return 0;
 }
 
 
+ 
 
 
 
@@ -368,7 +358,8 @@ int
 ata_identify(struct cam_device *cdb,
 	     char **vendor,
 	     char **model,
-	     char **revision) {
+	     char **revision,
+	     int *have_selftest) {
     union ccb *ccb;
     struct ata_params apb;
     uint8_t *bp;
@@ -446,25 +437,16 @@ ata_identify(struct cam_device *cdb,
  *     LBA mid = 0x4f, LBA high = 0xc2: thresholds not exceeded
  *     LBA mid = 0xf4, LBA high = 0x2c: threshold exceeded
  */
-
-/*
- * ATA/SATA: SMART RETURN STATUS
- *
- * The command returns one of these cylinder/LBA register pairs:
- *
- *     LBA mid = 0x4f, LBA high = 0xc2: thresholds not exceeded
- *     LBA mid = 0xf4, LBA high = 0x2c: threshold exceeded
- */
 int
 ata_smart_status(struct cam_device *dev,
-		 struct smart_result *result) {
+		 DRIVE *dp) {
     union ccb *ccb;
     uint32_t cam_status;
     uint8_t lba_mid;
     uint8_t lba_high;
     int saved_errno;
-
-    smart_result_init(result);
+    int rc = 0;
+    
 
     ccb = cam_getccb(dev);
     if (ccb == NULL) {
@@ -542,46 +524,44 @@ ata_smart_status(struct cam_device *dev,
     lba_mid = ccb->ataio.res.lba_mid;
     lba_high = ccb->ataio.res.lba_high;
 
-    result->detail1 = lba_mid;
-    result->detail2 = lba_high;
-
     cam_freeccb(ccb);
 
     if (lba_mid == 0x4f && lba_high == 0xc2) {
-        result->health = HEALTH_SMART_PASSED;
-	result->protocol = HEALTH_PROTOCOL_ATA;
-        return (1);
+        dp->raw.smart_status = DRIVE_SMART_PASSED;
+	rc = 1;
+    } else if (lba_mid == 0xf4 && lba_high == 0x2c) {
+        dp->raw.smart_status = DRIVE_SMART_FAILED;
+	rc = 1;
+    } else {
+	fprintf(stderr,
+		"%s%u: unexpected SMART status registers: "
+		"LBA mid=0x%02x, LBA high=0x%02x\n",
+		dev->given_dev_name,
+		dev->given_unit_number,
+		lba_mid,
+		lba_high);
+	
+	errno = EIO;
+	return (-1);
     }
 
-    if (lba_mid == 0xf4 && lba_high == 0x2c) {
-        result->health = HEALTH_SMART_FAILED;
-	result->protocol = HEALTH_PROTOCOL_ATA;
-        return (1);
-    }
-
-    fprintf(stderr,
-        "%s%u: unexpected SMART status registers: "
-        "LBA mid=0x%02x, LBA high=0x%02x\n",
-        dev->given_dev_name,
-        dev->given_unit_number,
-        lba_mid,
-        lba_high);
-
-    errno = EIO;
-    return (-1);
+    if (f_debug)
+	fprintf(stderr, "\tATA SMART STATUS: status=%s\n", drive_smart_status2str(dp->raw.smart_status));
+    
+    return rc;
 }
 
 
-static enum health_tests_status
-classify_ata_self_test(uint8_t status)
+static enum drive_selftest_status
+classify_ata_selftest(uint8_t status)
 {
     switch (status) {
     case 0x0:
-        return (HEALTH_TESTS_PASSED);
+        return (DRIVE_SELFTEST_PASSED);
 
     case 0x1:
     case 0x2:
-        return (HEALTH_TESTS_ABORTED);
+        return (DRIVE_SELFTEST_ABORTED);
 
     case 0x3:
     case 0x4:
@@ -589,13 +569,13 @@ classify_ata_self_test(uint8_t status)
     case 0x6:
     case 0x7:
     case 0x8:
-        return (HEALTH_TESTS_FAILED);
+        return (DRIVE_SELFTEST_FAILED);
 
     case 0xf:
-        return (HEALTH_TESTS_RUNNING);
+        return (DRIVE_SELFTEST_RUNNING);
 
     default:
-        return (HEALTH_TESTS_UNKNOWN);
+        return (DRIVE_SELFTEST_UNKNOWN);
     }
 }
 
@@ -603,26 +583,23 @@ classify_ata_self_test(uint8_t status)
  * Read the most recent ATA SMART self-test result from an ada device.
  */
 int
-ata_tests_status(struct cam_device *dev,
-		 struct tests_result *result)
-{
+ata_selftest_status(struct cam_device *dev,
+		    DRIVE *dp) {
     union ccb *ccb;
     uint8_t buffer[ATA_SMART_LOG_SIZE];
     uint8_t index;
     uint8_t status_byte;
     uint8_t status;
     uint32_t cam_status;
-    uint32_t failing_lba;
     size_t entry_offset;
     int saved_errno;
+    uint64_t poh;
+    
 
-    if (dev == NULL || result == NULL) {
+    if (!dev || !dp) {
         errno = EINVAL;
         return (-1);
     }
-
-    tests_result_init(result);
-    memset(buffer, 0, sizeof(buffer));
 
     ccb = cam_getccb(dev);
     if (ccb == NULL) {
@@ -708,7 +685,7 @@ ata_tests_status(struct cam_device *dev,
     index = buffer[ATA_SELF_TEST_INDEX_OFFSET];
 
     if (index == 0) {
-        result->state = HEALTH_TESTS_NONE;
+        dp->raw.selftest_status = DRIVE_SELFTEST_NONE;
         return (0);
     }
 
@@ -734,59 +711,44 @@ ata_tests_status(struct cam_device *dev,
      * byte 2-3   lifetime hours, little-endian
      * byte 4-7   failing LBA, little-endian
      */
-    result->test_code = buffer[entry_offset];
-
-    status_byte = buffer[entry_offset + 1];
-    status = (status_byte >> 4) & 0x0f;
-
-    result->result_code = status;
-    result->state = classify_ata_self_test(status);
-    result->power_on_hours =
-        get_le16(&buffer[entry_offset + 2]);
-
-    failing_lba = get_le32(&buffer[entry_offset + 4]);
-
-    /*
-     * ATA logs commonly use 0xffffffff when no failing LBA applies.
-     */
-    result->failing_lba = failing_lba;
-    if (failing_lba == UINT32_MAX)
-        result->failing_lba = UINT64_MAX;
-
-    return (0);
+     status_byte = buffer[entry_offset + 1];
+     status = (status_byte >> 4) & 0x0f;
+     
+     dp->raw.selftest_status = classify_ata_selftest(status);
+     
+     poh = get_le16(&buffer[entry_offset + 2]);
+     if (poh > dp->raw.power_on_hours)
+	 dp->raw.power_on_hours = poh;
+     
+     return 1;
 }
 
 
 int
 ata_health_status(struct cam_device *dev,
-		  struct health_result *result,
-		  int have_selftest) {
-    struct smart_result smart;
-    struct tests_result tests;
-    int rc1, rc2, rc3;
+		  DRIVE *dp) {
+    int rc1 = 0, rc2 = 0, rc3 = 0;
 
 
-    memset(result, 0, sizeof(*result));
-    
-    rc1 = ata_drive_temperature(dev, &result->drive.temperature);
+    if (f_debug)
+	fprintf(stderr, "  [temp]\n");
+    rc1 = ata_drive_temperature(dev, dp);
     if (rc1 < 0)
 	return rc1;
     
-    rc2 = ata_smart_status(dev, &smart);
-    if (rc2 >= 0) {
-	result->protocol = HEALTH_PROTOCOL_SCSI;
-	result->smart.status = smart.health;
-    }
-    
-    rc3 = ata_tests_status(dev, &tests);
-    if (rc3 >= 0) {
-	result->tests.status = tests.state;
-	result->drive.power_on_hours = tests.power_on_hours;
+    if (f_debug)
+	fprintf(stderr, "  [smart]\n");
+    rc2 = ata_smart_status(dev, dp);
+
+    if (dp->flags.have_selftest) {
+	if (f_debug)
+	    fprintf(stderr, "  [selftest]\n");
+	rc3 = ata_selftest_status(dev, dp);
     }
 
-    if (rc1 > 0 || rc2 > 0)
+    if (rc1 > 0 || rc2 > 0 || rc3 > 0)
 	return 1;
-    if (rc1 == 0 && rc2 == 0)
+    if (rc1 == 0 && rc2 == 0 && rc3 == 0)
 	return 0;
     
     return -1;

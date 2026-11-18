@@ -1,5 +1,5 @@
 /*
- * utils.c
+ * utils.h
  *
  * Common util functions
  *
@@ -38,6 +38,10 @@
 
 #include <stdint.h>
 #include <sys/types.h>
+
+extern uint64_t
+get_be(const uint8_t *p,
+       uint8_t len);
 
 extern uint16_t
 get_be16(const uint8_t *p);

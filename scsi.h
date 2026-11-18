@@ -1,33 +1,63 @@
+/*
+ * scsi.h
+ *
+ * SCSI/SAS-specific code to handle "da" drives
+ *
+ * Copyright (c) 2026 Peter Eriksson <pen@lysator.liu.se>
+ *
+ * All rights reserved.
+ * 
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ * 
+ * 1. Redistributions of source code must retain the above copyright notice, this
+ *    list of conditions and the following disclaimer.
+ * 
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ * 
+ * 3. Neither the name of the copyright holder nor the names of its
+ *    contributors may be used to endorse or promote products derived from
+ *    this software without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+ * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+ * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
 #ifndef DRVLIST_SCSI_H
 #define DRVLIST_SCSI_H 1
 
 #include <cam/cam.h>
 
-#include "smart.h"
-#include "tests.h"
+#include "drive.h"
 
-#if 0
-#define SCSI_LOG_SENSE               0x4D
-#define SCSI_IE_LOG_PAGE             0x2F
-#define SCSI_TEMP_LOG_PAGE           0x0D
-#define SCSI_SELFTEST_RESULTS_PAGE   0x10
-#endif
 
 extern int
 scsi_drive_temperature(struct cam_device *dev,
-		       double *temp_c);
+		       DRIVE *dp);
 
 extern int
-scsi_smart_status(struct cam_device *dev,
-		  struct smart_result *result);
+scsi_ie_status(struct cam_device *dev,
+		       DRIVE *dp);
 
 extern int
-scsi_tests_status(struct cam_device *dev,
-		  struct tests_result *result);
+scsi_selftest_results_status(struct cam_device *dev,
+		       DRIVE *dp);
 
 extern int
 scsi_health_status(struct cam_device *dev,
-		   struct health_result *result,
-		   int have_selftest);
+		       DRIVE *dp);
+
+extern int
+scsi_drive_is_satl(struct cam_device *dev);
 
 #endif

@@ -1,5 +1,3 @@
-/* XXX: Use FORMAT STATUS LOG PAGE to get power-on-hours since last format */
-
 /*
  * scsi.c
  *
@@ -51,22 +49,47 @@
 #include <string.h>
 
 #include "utils.h"
-
-#include "health.h"
-
-#include "smart.h"
-#include "tests.h"
-
 #include "scsi.h"
 
 extern int f_debug;
 extern char *argv0;
 
 
-#define SCSI_LOG_SENSE               0x4D
-#define SCSI_TEMP_LOG_PAGE           0x0D
-#define SCSI_SELFTEST_RESULTS_PAGE   0x10
-#define SCSI_IE_LOG_PAGE             0x2F
+#define SCSI_LOG_SENSE                       0x4d
+
+#define SCSI_SUPPORTED_LOGS_PAGE             0x00
+#define SCSI_SUPPORTED_LOGS_SUBPAGE          0x00
+
+#define SCSI_FORMAT_STATUS_LOG_PAGE          0x08
+#define SCSI_FORMAT_STATUS_LOG_SUBPAGE       0x00
+
+#define SCSI_TEMP_LOG_PAGE                   0x0d
+#define SCSI_TEMP_LOG_SUBPAGE                0x00
+
+#define SCSI_SELFTEST_RESULTS_LOG_PAGE       0x10
+#define SCSI_SELFTEST_RESULTS_LOG_SUBPAGE    0x00
+
+#define SCSI_SSD_MEDIA_LOG_PAGE              0x11
+#define SCSI_SSD_MEDIA_LOG_SUBPAGE           0x00
+
+#define SCSI_IE_LOG_PAGE                     0x2f
+#define SCSI_IE_LOG_SUBPAGE                  0x00
+
+#define LOG_SENSE_BUFFER_SIZE                4096
+#if 0
+#define LOG_SENSE_FORMAT_STATUS_BUFFER_SIZE  4096
+#define LOG_SENSE_TEMP_BUFFER_SIZE           252
+#define LOG_SENSE_IE_BUFFER_SIZE             252
+#define LOG_SENSE_SELFTEST_BUFFER_SIZE       4096
+#define LOG_SENSE_SSD_MEDIA_BUFFER_SIZE      252
+#endif
+
+#define SELFTEST_PARAMETER_DATA_LENGTH       16
+
+/*
+ * Four-byte log-parameter header plus 16 bytes of self-test data.
+ */
+#define SELFTEST_PARAMETER_TOTAL_LENGTH       20
 
 
 struct log_sense_cdb {
@@ -80,11 +103,132 @@ struct log_sense_cdb {
 };
 
 
+struct log_sense_page {
+    struct {
+	uint8_t page_code;
+	uint8_t subpage;
+	uint8_t page_length[2];
+    } h;
+    uint8_t data[4096];
+};
 
+struct log_sense_parameter {
+    uint8_t code[2];
+    uint8_t control;
+    uint8_t length;
+    uint8_t data[];
+};
+
+struct supported_log_pages {
+    unsigned int temp : 1;
+    unsigned int ie : 1;
+    unsigned int selftest : 1;
+    unsigned int ssd_media : 1;
+    unsigned int format_status : 1;
+};
+
+
+static struct log_sense_parameter *
+get_next_parameter(uint8_t *buf,
+		   size_t buflen,
+		   off_t *off) {
+    struct log_sense_parameter *pp;
+
+    
+    if (*off+sizeof(*pp) > buflen)
+	return NULL;
+
+    pp = (struct log_sense_parameter *) (buf+*off);
+
+    *off += sizeof(*pp);
+    
+    if (*off+pp->length > buflen)
+	return NULL;
+    
+    *off += pp->length;
+
+    return pp;
+}
+
+
+static int
+is_invalid(uint8_t *data,
+	   uint8_t length) {
+    int i;
+    
+    for (i = 0; i < length && data[i] == 0xff; i++)
+	;
+
+    return i == length;
+}
+
+int
+scsi_drive_has_vpd_page(struct cam_device *dev,
+			uint8_t page_id,
+			int retry_count,
+			int timeout,
+			int verbosemode)
+{
+	union ccb *ccb = NULL;
+	struct scsi_vpd_supported_page_list sup_pages;
+	int i;
+	int retval = 0;
+
+	ccb = cam_getccb(dev);
+	if (ccb == NULL)
+	    return -1;
+
+	memset(&sup_pages, 0, sizeof(sup_pages));
+
+	scsi_inquiry(&ccb->csio,
+		     /*retries*/ retry_count,
+		     /*cbfcnp*/ NULL,
+		     /* tag_action */ MSG_SIMPLE_Q_TAG,
+		     /* inq_buf */ (uint8_t *)&sup_pages,
+		     /* inq_len */ sizeof(sup_pages),
+		     /* evpd */ 1,
+		     /* page_code */ SVPD_SUPPORTED_PAGE_LIST,
+		     /* sense_len */ SSD_FULL_SIZE,
+		     /* timeout */ timeout ? timeout : 5000);
+
+	/* Disable freezing the device queue */
+	ccb->ccb_h.flags |= CAM_DEV_QFRZDIS;
+
+	if (retry_count != 0)
+		ccb->ccb_h.flags |= CAM_PASS_ERR_RECOVER;
+
+	if (cam_send_ccb(dev, ccb) < 0) {
+		cam_freeccb(ccb);
+		ccb = NULL;
+		retval = -1;
+		goto bailout;
+	}
+
+	if ((ccb->ccb_h.status & CAM_STATUS_MASK) != CAM_REQ_CMP) {
+		if (verbosemode != 0)
+			cam_error_print(dev, ccb, CAM_ESF_ALL,
+					CAM_EPF_ALL, stderr);
+		retval = -1;
+		goto bailout;
+	}
+
+	for (i = 0; i < sup_pages.length; i++) {
+		if (sup_pages.list[i] == page_id) {
+			retval = 1;
+			goto bailout;
+		}
+	}
+bailout:
+	if (ccb != NULL)
+		cam_freeccb(ccb);
+
+	return (retval);
+}
 
 ssize_t
 scsi_cmd_log_sense(struct cam_device *dev,
-		   uint8_t page_code,
+		   uint8_t page,
+		   uint8_t subpage,
 		   uint8_t *buf,
 		   size_t bufsize) {
     union ccb *ccb;
@@ -116,15 +260,18 @@ scsi_cmd_log_sense(struct cam_device *dev,
     cdb = (struct log_sense_cdb *)&ccb->csio.cdb_io.cdb_bytes;
     memset(cdb, 0, sizeof(*cdb));
 
-    cdb->page = (1 << 6) | page_code;
+    cdb->page = (1 << 6) | page;
+    cdb->subpage = subpage;
     cdb->opcode = SCSI_LOG_SENSE;
     put_be16(cdb->alloc_len, bufsize);
     
     if (cam_send_ccb(dev, ccb) < 0) {
 	saved_errno = errno;
 	if (f_debug)
-	    fprintf(stderr, "%s: Error: %s%u: LOG SENSE failed: cam_send_ccb: %s\n",
+	    fprintf(stderr,
+		    "%s: Error: %s%u: LOG SENSE 0x%02x/0x%02x Failed: cam_send_ccb: %s\n",
 		    argv0, dev->given_dev_name, dev->given_unit_number,
+		    page, subpage, 
 		    strerror(errno));
 	
         cam_freeccb(ccb);
@@ -138,10 +285,13 @@ scsi_cmd_log_sense(struct cam_device *dev,
     cam_freeccb(ccb);
     
     if (cam_status != CAM_REQ_CMP) {
-	if (f_debug)
-	    fprintf(stderr, "%s: Error: %s%u: LOG SENSE failed: CAM status 0x%x\n",
+	if (f_debug) {
+	    fprintf(stderr, "%s: Error: %s%u: LOG SENSE 0x%02x/0x%02x Failed: CAM status 0x%x\n",
 		    argv0, dev->given_dev_name, dev->given_unit_number,
+		    page, subpage, 
 		    cam_status);
+	    scsi_sense_print(dev, &ccb->csio, stderr);
+	}
 	errno = EBUSY;
         return -1;
     }
@@ -164,8 +314,9 @@ scsi_cmd_log_sense(struct cam_device *dev,
     got = bufsize - (size_t)ccb->csio.resid;
 
     if (got < 4) {
-	fprintf(stderr, "%s: Error: %s%u: LOG SENSE failed: Truncated LOG SENSE page\n",
-		argv0, dev->given_dev_name, dev->given_unit_number);
+	fprintf(stderr, "%s: Error: %s%u: LOG SENSE 0x%02x/0x%02x Failed: Truncated LOG SENSE page\n",
+		argv0, dev->given_dev_name, dev->given_unit_number, 
+		page, subpage);
 	errno = EIO;
 	return -1;
     }
@@ -178,7 +329,7 @@ scsi_cmd_log_sense(struct cam_device *dev,
      * byte 2-3 page length
      */
 
-    if ((buf[0] & 0x3f) != page_code) {
+    if ((buf[0] & 0x3f) != page) {
 	if (f_debug)
 	    fprintf(stderr, "%s: Error: %s%u: LOG SENSE failed: 0x%02x: Invalid Page Code\n",
 		    argv0, dev->given_dev_name, dev->given_unit_number,
@@ -190,6 +341,7 @@ scsi_cmd_log_sense(struct cam_device *dev,
     
     len = get_be16(&buf[2]) + 4;
 
+    /* Some sanity checks */
     if (len > bufsize) {
 	if (f_debug)
 	    fprintf(stderr, "%s: Error: %s%u: LOG SENSE buffer too small: len=%zd > bufsize = %zd\n",
@@ -212,39 +364,106 @@ scsi_cmd_log_sense(struct cam_device *dev,
 }
 	       
 
-
 int
-scsi_drive_temperature(struct cam_device *dev,
-		       double *temp_c) {
-    uint8_t buf[252];
+scsi_foreach_log_sense(struct cam_device *dev,
+		       uint8_t page,
+		       uint8_t subpage,
+		       int (*param_handler)(uint16_t code, uint8_t control, uint8_t length, uint8_t *data, void *xp),
+		       void *xp) {
+    uint8_t buf[LOG_SENSE_BUFFER_SIZE];
     ssize_t len;
     off_t off;
-    int rc = -1;
+    struct log_sense_parameter *pp;
+    int rc = 0;
     
     
-    len = scsi_cmd_log_sense(dev, SCSI_TEMP_LOG_PAGE, buf, sizeof(buf));
+    len = scsi_cmd_log_sense(dev, page, subpage, buf, sizeof(buf));
     if (len < 0)
 	return -1;
     
-    /*
-     * Parameters begin at byte 4.
-     *
-     * Parameter header:
-     *
-     *  0-1  parameter code
-     *  2    parameter control byte
-     *  3    parameter length
-     */
+    /* Parameters begin at byte 4 */
     off = 4;
+    while ((pp = get_next_parameter(buf, len, &off)) != NULL) {
+	uint16_t code = get_be16(pp->code);
+	
+	rc = (*param_handler)(code, pp->control, pp->length, pp->data, xp);
+	if (rc)
+	    break;
+    }
 
-    while (off + 4 <= len) {
-        uint16_t parameter = get_be16(&buf[off]);
-        uint8_t plen = buf[off + 3];
+    return rc;
+}
 
-        if (off + 4 + plen > len)
-            break;
 
-	if (parameter == 0x0000 && plen >= 2) {
+
+int
+scsi_supported_log_pages(struct cam_device *dev,
+			 struct supported_log_pages *pages) {
+    uint8_t buf[4096];
+    ssize_t len;
+    off_t off;
+
+    
+    len = scsi_cmd_log_sense(dev,
+			     SCSI_SUPPORTED_LOGS_PAGE,
+			     SCSI_SUPPORTED_LOGS_SUBPAGE,
+			     buf, sizeof(buf));
+    if (len < 0)
+	return -1;
+
+
+    if (f_debug) 
+	fprintf(stderr, "\t%2zu Pages:",
+		len-4);
+    
+    for (off = 4; off < len; off++) {
+	uint8_t page = buf[off];
+	
+	if (f_debug)
+	    fprintf(stderr, " 0x%02x", page);
+	if (pages) {
+	    switch (page) {
+	    case SCSI_TEMP_LOG_PAGE:
+		pages->temp = 1;
+		break;
+	    case SCSI_IE_LOG_PAGE:
+		pages->ie = 1;
+		break;
+	    case SCSI_SELFTEST_RESULTS_LOG_PAGE:
+		pages->selftest = 1;
+		break;
+	    case SCSI_SSD_MEDIA_LOG_PAGE:
+		pages->ssd_media = 1;
+		break;
+	    case SCSI_FORMAT_STATUS_LOG_PAGE:
+		pages->format_status = 1;
+		break;
+	    }
+	}
+    }
+
+    if (f_debug)
+	putc('\n', stderr);
+
+    return 0;
+}
+
+
+			 
+
+static int
+drive_temp_handler(uint16_t code,
+		   uint8_t control,
+		   uint8_t length,
+		   uint8_t *data,
+		   void *xp) {
+    DRIVE *dp = (DRIVE *) xp;
+    int rc = 0;
+
+
+    switch (code) {
+    case 0x0000: /* Temperature */
+	if (length >= 2) {
 	    /*
 	     * Temperature parameter.
 	     *
@@ -253,141 +472,282 @@ scsi_drive_temperature(struct cam_device *dev,
 	     *
 	     * 0xff means temperature unavailable.
 	     */
-	    uint8_t temp = buf[off + 5];
+	    uint8_t temp = data[1];
 	    
-	    if (temp == 0xff)
-		rc = 0;
-	    else {
-		*temp_c = temp;
+	    if (temp != 0xff) {
+		if (f_debug)
+		    fprintf(stderr, "\tTEMPERATURE LOG: temp=%u C\n",
+			    temp);
+		dp->raw.temperature = temp;
 		rc = 1;
 	    }
-
-	    /* We ignore other temp & humidity parameters */
-	    return rc;
 	}
+	break;
+	
+    case 0x0001: /* Reference Temperature */
+	if (length >= 2) {
+	    uint8_t temp = data[1];
 
-        off += 4 + plen;
+	    if (f_debug)
+		fprintf(stderr, "\tTEMPERATURE LOG: reftemp=%u\n",
+			temp);
+	}
+	break;
+	    
+    default:
+	if (f_debug)
+	    fprintf(stderr, "\tTEMPERATURE LOG: code 0x%04x\n",
+		    code);
+	break;
+    } 
+    
+    return rc;
+}
+
+
+int
+scsi_drive_temperature(struct cam_device *dev,
+		       DRIVE *dp) {
+    return scsi_foreach_log_sense(dev,
+				  SCSI_TEMP_LOG_PAGE, SCSI_TEMP_LOG_SUBPAGE,
+				  drive_temp_handler,
+				  (void *) dp);
+}
+
+
+static int
+ssd_media_handler(uint16_t code,
+		  uint8_t control,
+		  uint8_t length,
+		  uint8_t *data,
+		  void *xp) {
+    DRIVE *dp = (DRIVE *) xp;
+    int rc = 0;
+
+    switch (code) {
+    case 0x0001: /* Percentage Used Endurance Indicator */
+	if (length >= 4) {
+	    /*
+	     * Byte 0-2 is reserved.
+	     * Byte 3 is Percentage Used Endurance
+	     */
+	    uint8_t used = data[3];
+
+	    if (f_debug)
+		fprintf(stderr, "\tSSD MEDIA LOG: used=%u %%\n",
+			used);
+
+	    dp->raw.endurance_used = used;
+	    rc = 1;
+	}
+	break;
+	
+    default:
+	if (f_debug)
+	    fprintf(stderr, "\tSSD MEDIA LOG: code 0x%04x\n",
+		    code);
+	break;
     }
 
     return rc;
-    
+}
+
+int
+scsi_endurance_used(struct cam_device *dev,
+		    DRIVE *dp) {
+    return scsi_foreach_log_sense(dev,
+				  SCSI_SSD_MEDIA_LOG_PAGE,
+				  SCSI_SSD_MEDIA_LOG_SUBPAGE,
+				  ssd_media_handler,
+				  (void *) dp);
 }
 
 
 
-/*
- * SCSI/SAS: Informational Exceptions log page 0x2f
- *
- * Parameter code 0 contains the device's informational-exception
- * additional sense code and qualifier.
- */
 int
-scsi_smart_status(struct cam_device *dev,
-		  struct smart_result *result) {
-    uint8_t buf[252];
-    ssize_t len;
-    off_t off;
+format_status_handler(uint16_t code,
+		      uint8_t control,
+		      uint8_t length,
+		      uint8_t *data,
+		      void *xp) {
+    DRIVE *dp = (DRIVE *) xp;
+    uint64_t val, poh;
+    int rc = 0;
+
     
-    smart_result_init(result);
-    len = scsi_cmd_log_sense(dev, SCSI_IE_LOG_PAGE, buf, sizeof(buf));
-    if (len < 0)
-	return -1;
+    if (is_invalid(data, length))
+	return 0;
     
-    /*
-     * Parameter descriptor:
-     *
-     * byte 0-1: parameter code
-     * byte 2:   parameter control
-     * byte 3:   parameter length
-     * byte 4..: parameter data
-     */
-    off = 4;
+    switch (code) {
+    case 0x0004: /* PowerOn Minutes since Format */
+	val = get_be(data, length);
+	
+	if (f_debug)
+	    fprintf(stderr, "\tFORMAT STATUS LOG: poweron_minutes=%zu (%zu hours)\n",
+		    val, val/60);
 
-    while (off + 4 <= len) {
-        uint16_t parameter_code;
-        uint8_t parameter_length;
-        uint8_t asc;
-        uint8_t ascq;
-
-        parameter_code = get_be16(&buf[off]);
-        parameter_length = buf[off + 3];
-
-        if (off + 4 + parameter_length > len)
-            break;
-
-        if (parameter_code == 0 && parameter_length >= 2) {
-            asc = buf[off + 4];
-            ascq = buf[off + 5];
-
-            result->detail1 = asc;
-            result->detail2 = ascq;
+	poh = val/60;
+	if (dp->raw.power_on_hours == DRIVE_NO_POWER_ON_HOURS || poh > dp->raw.power_on_hours)
+	    dp->raw.power_on_hours = poh;
+	rc = 1;
+	break;
+	
+    case 0x0000: /* Format Data Out */
+	if (f_debug) {
+	    int i;
 	    
-	    result->temp_c = buf[off+6];
-	    
-
-            /*
-             * No informational exception is currently reported.
-             */
-            if (asc == 0 && ascq == 0) {
-                result->health = HEALTH_SMART_PASSED;
-		result->protocol = HEALTH_PROTOCOL_SCSI;
-                return (1);
-            }
-
-            /*
-             * Common predictive-failure ASC:
-             *
-             *     ASC 0x5d: Failure prediction threshold exceeded
-             *
-             * ASCQ provides the component-specific detail.
-             */
-            if (asc == 0x5d) {
-                result->health = HEALTH_SMART_FAILED;
-		result->protocol = HEALTH_PROTOCOL_SCSI;
-                return (1);
-            }
-
-            /*
-             * The device reports another informational exception.
-             * Preserve ASC/ASCQ and report it as a warning.
-             */
-            result->health = HEALTH_SMART_WARNING;
-	    result->protocol = HEALTH_PROTOCOL_SCSI;
-            return (1);
-        }
-
-        off += 4 + parameter_length;
+	    fprintf(stderr, "\tFORMAT STATUS LOG: format_data_out:");
+	    for (i = 0; i < length; i++)
+		fprintf(stderr, " 0x%02x", data[i]);
+	    putc('\n', stderr);
+	}
+	break;
+    case 0x0001: /* Grown Defects During Certification */
+	val = get_be(data, length);
+	if (f_debug)
+	    fprintf(stderr, "\tFORMAT STATUS LOG: grown_defects=%zu\n", val);
+	break;
+    case 0x0002: /* Total Blocks Reassigned During Format */
+	val = get_be(data, length);
+	if (f_debug)
+	    fprintf(stderr, "\tFORMAT STATUS LOG: total_blocks_reassigned_during_format=%zu\n", val);
+	break;
+    case 0x0003: /* Total New Blocks Reassigned */
+	val = get_be(data, length);
+	if (f_debug)
+	    fprintf(stderr, "\tFORMAT STATUS LOG: total_new_blocks_reassigned=%zu\n", val);
+	break;
+	
+    default:
+	if (f_debug)
+	    fprintf(stderr, "\tFORMAT STATUS LOG: code 0x%04x\n",
+		    code);
+	break;
     }
 
-    fprintf(stderr,
-        "%s%u: informational-exceptions parameter not found\n",
-        dev->given_dev_name,
-        dev->given_unit_number);
-
-    errno = EIO;
-    return (-1);
+    return rc;
 }
 
 
+int
+scsi_format_status_poweron(struct cam_device *dev,
+			   DRIVE *dp) {
+    return scsi_foreach_log_sense(dev,
+				  SCSI_FORMAT_STATUS_LOG_PAGE,
+				  SCSI_FORMAT_STATUS_LOG_SUBPAGE,
+				  format_status_handler,
+				  (void *) dp);
+}
 
 
-#define SELFTEST_LOG_BUFFER_SIZE              4096
-#define SELFTEST_PARAMETER_DATA_LENGTH        16
+int
+ie_status_handler(uint16_t code,
+		  uint8_t control,
+		  uint8_t length,
+		  uint8_t *data,
+		  void *xp) {
+    DRIVE *dp = (DRIVE *) xp;
+    int rc = 0;
+    uint8_t asc;
+    uint8_t ascq;
+    
+    
+    if (is_invalid(data, length))
+	return 0;
+    
+    switch (code) {
+    case 0x0000: /* General Parameter Data */
+        if (length < 2)
+	    return 0;
+	
+	asc    = data[0];
+	ascq   = data[1];
+	
+	uint8_t temp_c = 0xff;
+	uint8_t trip_c = 0xff;
+	uint8_t max_c  = 0xff;
+	
+	if (length >= 3) {
+	    temp_c = data[2];
+	    if (f_debug)
+		fprintf(stderr, "\tINFORMATIONAL EXCEPTIONS LOG: temp=%u C\n",
+			temp_c);
+	    
+	    if (length >= 4) {
+		trip_c = data[3];
+		if (f_debug)
+		    fprintf(stderr, "\tINFORMATIONAL EXCEPTIONS LOG: trip=%u C\n",
+			    trip_c);
+		if (length >= 5) {
+		    max_c = data[4];
+		    if (f_debug)
+			fprintf(stderr, "\tINFORMATIONAL EXCEPTIONS LOG: max=%u C\n",
+				max_c);
+		}
+	    }
+	}
+	
+	if (temp_c != 0xff)
+	    dp->raw.temperature= temp_c;
+	
+	/*
+	 * No informational exception is currently reported.
+	 */
+	if (asc == 0 && ascq == 0) {
+	    dp->raw.smart_status = DRIVE_SMART_PASSED;
+	    rc = 1;
+	    break;
+	}
+	
+	/*
+	 * Common predictive-failure ASC:
+	 *
+	 *     ASC 0x5d: Failure prediction threshold exceeded
+	 *
+	 * ASCQ provides the component-specific detail.
+	 */
+	if (asc == 0x5d) {
+	    dp->raw.smart_status = DRIVE_SMART_FAILED;
+	    rc = 1;
+	    break;
+	}
+	
+	/*
+	 * The device reports another informational exception.
+	 * Preserve ASC/ASCQ and report it as a warning.
+	 */
+	dp->raw.smart_status = DRIVE_SMART_WARNING;
+	rc = 1;
+	break;
+    }
 
-/*
- * Four-byte log-parameter header plus 16 bytes of self-test data.
- */
-#define SELFTEST_PARAMETER_TOTAL_LENGTH       20
+    if (f_debug && rc == 1)
+	fprintf(stderr, "\tIE STATUS: ASC=0x%02x ASCQ=0x%02x smart=%s\n",
+		asc, ascq, drive_smart_status2str(dp->raw.smart_status));
+    
+    return rc;
+}
 
-static enum health_tests_status
-scsi_classify_tests_result(uint8_t code) {
+int
+scsi_ie_status(struct cam_device *dev,
+	       DRIVE *dp) {
+   return scsi_foreach_log_sense(dev,
+				  SCSI_IE_LOG_PAGE,
+				  SCSI_IE_LOG_SUBPAGE,
+				  ie_status_handler,
+				  (void *) dp);
+}
+
+
+static enum drive_selftest_status
+classify_selftest_result(uint8_t code) {
     switch (code) {
     case 0x0:
-        return (HEALTH_TESTS_PASSED);
+        return (DRIVE_SELFTEST_PASSED);
 
     case 0x1:
     case 0x2:
-        return (HEALTH_TESTS_ABORTED);
+        return (DRIVE_SELFTEST_ABORTED);
 
     case 0x3:
     case 0x4:
@@ -395,179 +755,143 @@ scsi_classify_tests_result(uint8_t code) {
     case 0x6:
     case 0x7:
     case 0x8:
-        return (HEALTH_TESTS_FAILED);
+        return (DRIVE_SELFTEST_FAILED);
 
     case 0x9:
-        return (HEALTH_TESTS_RUNNING);
+        return (DRIVE_SELFTEST_RUNNING);
 
     case 0xf:
-        return (HEALTH_TESTS_NONE);
+        return (DRIVE_SELFTEST_NONE);
 
     default:
-        return (HEALTH_TESTS_UNKNOWN);
+        return (DRIVE_SELFTEST_UNKNOWN);
     }
 }
 
-/*
- * Read the newest entry from SCSI Self-test Results log page 0x10.
- */
 int
-scsi_tests_status(struct cam_device *dev,
-		  struct tests_result *result) {
-    uint8_t buf[SELFTEST_LOG_BUFFER_SIZE];
-    ssize_t len;
-    off_t off;
-    int rc = -1;
+selftest_results_handler(uint16_t code,
+			 uint8_t control,
+			 uint8_t length,
+			 uint8_t *data,
+			 void *xp) {
+    DRIVE *dp = (DRIVE *) xp;
+    int rc = 0;
+    uint8_t selftest_code;
+    uint8_t selftest_result;
+    uint16_t poh;
     
     
-    memset(result, 0, sizeof(*result));
-    result->state = HEALTH_TESTS_UNKNOWN;
+    /* Self-test result descriptors contain 16 data bytes */
+    if (length < 16)
+	return 0;
 	
-
-    len = scsi_cmd_log_sense(dev, SCSI_SELFTEST_RESULTS_PAGE, buf, sizeof(buf));
-    if (len < 0)
-	return -1;
-
-    off = 4;
-    while (off + 4 <= len) {
-        uint16_t parameter_code;
-        uint8_t parameter_length;
-        const uint8_t *data;
-        uint8_t status_byte;
-
-        parameter_code = get_be16(&buf[off]);
-        parameter_length = buf[off + 3];
-
-        if (off + 4 + parameter_length > len) {
-            fprintf(stderr,
-                "%s%u: truncated self-test parameter 0x%04x\n",
-                dev->given_dev_name,
-                dev->given_unit_number,
-                parameter_code);
-
-            errno = EIO;
-            return -1;
-        }
-
-        /*
-         * Self-test result descriptors contain 16 data bytes.
-         * Parameter code 1 is normally the newest entry. If the
-         * drive starts numbering differently, the first valid
-         * descriptor is still treated as the newest.
-         */
-        if (parameter_length >= SELFTEST_PARAMETER_DATA_LENGTH) {
-            data = &buf[off + 4];
-	    uint16_t poh;
-	    
-            /*
-             * Descriptor byte zero:
-             *
-             * bits 7-5  self-test code
-             * bit  4    reserved
-             * bits 3-0  self-test result
-             */
-            status_byte = data[0];
-
-            result->parameter_code = parameter_code;
-            result->test_code = (status_byte >> 5) & 0x07;
-            result->result_code = status_byte & 0x0f;
-
-            /*
-             * Bytes 2-3: accumulated power-on hours.
-             */
-
-	    poh = get_be16(&data[2]);
-	    if (poh > result->power_on_hours)
-		result->power_on_hours = poh;
-
-            /*
-             * Bytes 4-11: address of first failing logical block.
-             *
-             * A drive commonly returns all ones when no failing LBA
-             * applies.
-             */
-            result->failing_lba = get_be64(&data[4]);
-
-            /*
-             * Byte 12: sense key in low nibble.
-             * Bytes 13-14: ASC and ASCQ.
-             */
-            result->details.scsi.sense_key = data[12] & 0x0f;
-            result->details.scsi.asc = data[13];
-            result->details.scsi.ascq = data[14];
-
-            result->state =
-                scsi_classify_tests_result(result->result_code);
-
-	    result->details.scsi.tests.done++;
-	    
-	    fprintf(stderr, "%s%u: Test %lu PowerOnHours %u [%u] State %d\n",
-		    dev->given_dev_name,
-		    dev->given_unit_number,
-		    result->details.scsi.tests.done,
-		    poh, result->power_on_hours,
-		    result->state);
-
-	    switch (result->state) {
-	    case HEALTH_TESTS_PASSED:
-		result->details.scsi.tests.passed++;
-		break;
-	    case HEALTH_TESTS_FAILED:
-		result->details.scsi.tests.failed++;
-		break;
-	    default:
-		break;
-	    }
-	    rc = 1;
-        }
-
-        off += 4 + parameter_length;
+    switch (code) {
+    case 0x0001:
+	/* Parameter code 1 is normally the newest entry */
+	
+	/*
+	 * Descriptor byte zero:
+	 *
+	 * bits 7-5  self-test code
+	 * bit  4    reserved
+	 * bits 3-0  self-test result
+	 */
+	selftest_code = (data[0] >> 5) & 0x07;
+	selftest_result = data[0] & 0x0f;
+	
+	/*
+	 * Bytes 2-3: accumulated power-on hours.
+	 */
+	poh = get_be16(&data[2]);
+	if (poh > 1 && poh != 0xffff) {
+	    if (f_debug)
+		fprintf(stderr, "\tSELFTEST RESULTS LOG: parameter=%u code=%u result=0x%x power_on_hours=%u\n",
+			code,
+			selftest_code,
+			selftest_result,
+			poh);
+	    if (dp->raw.power_on_hours == DRIVE_NO_POWER_ON_HOURS || poh > dp->raw.power_on_hours)
+		dp->raw.power_on_hours = poh;
+	}
+	
+	dp->raw.selftest_status = classify_selftest_result(selftest_result);
+	rc = 1; /* Stop scanning other results */
+	break;
     }
-
-    /*
-     * A valid but empty page means no recorded self-test result.
-     */
-    if (result->state == HEALTH_TESTS_UNKNOWN && result->details.scsi.tests.done == 0)
-	result->state = HEALTH_TESTS_NONE;
     
     return rc;
 }
 
 
+int
+scsi_selftest_results_status(struct cam_device *dev,
+			     DRIVE *dp) {
+   return scsi_foreach_log_sense(dev,
+				  SCSI_SELFTEST_RESULTS_LOG_PAGE,
+				  SCSI_SELFTEST_RESULTS_LOG_SUBPAGE,
+				  selftest_results_handler,
+				  (void *) dp);
+}
+
 
 
 
 int
+scsi_drive_is_satl(struct cam_device *dev) {
+    return scsi_drive_has_vpd_page(dev, SVPD_ATA_INFORMATION, 1, 0, 0);
+}
+
+
+int
 scsi_health_status(struct cam_device *dev,
-		   struct health_result *result,
-		   int have_selftest) {
-    struct smart_result smart;
-    struct tests_result tests;
-    int rc1, rc2, rc3;
+		   DRIVE *dp) {
+    int rc1 = 0, rc2 = 0, rc3 = 0, rc4 = 0, rc5 = 0;
+    struct supported_log_pages pages;
 
 
-    memset(result, 0, sizeof(*result));
+    if (f_debug)
+	fprintf(stderr, "  [supported]\n");
+
+    memset(&pages, 0, sizeof(pages));
+    scsi_supported_log_pages(dev, &pages);
     
-    rc1 = scsi_drive_temperature(dev, &result->drive.temperature);
-    if (rc1 < 0)
-	return rc1;
-    
-    rc2 = scsi_smart_status(dev, &smart);
-    if (rc2 >= 0) {
-	result->protocol = HEALTH_PROTOCOL_SCSI;
-	result->smart.status = smart.health;
-	result->drive.power_on_hours = smart.power_on_hours;
+
+    if (pages.ie) {
+	if (f_debug)
+	    fprintf(stderr, "  [ie]\n");
+	rc2 = scsi_ie_status(dev, dp);
     }
     
-    rc3 = scsi_tests_status(dev, &tests);
-    if (rc3 >= 0) {
-	result->tests.status = tests.state;
-	result->drive.power_on_hours = tests.power_on_hours;
+    if (pages.temp && (dp->raw.temperature == 0xFF || 1)) {
+	if (f_debug)
+	    fprintf(stderr, "  [temp]\n");
+	rc1 = scsi_drive_temperature(dev, dp);
     }
 
-    if (rc1 > 0 || rc2 > 0)
+
+    if (pages.selftest) {
+	if (f_debug)
+	    fprintf(stderr, "  [selftest]\n");
+	rc3 = scsi_selftest_results_status(dev, dp);
+    }
+
+    if (pages.ssd_media) {
+	if (f_debug)
+	    fprintf(stderr, "  [ssd]\n");
+	rc4 = scsi_endurance_used(dev, dp);
+    }
+
+    if (pages.format_status) {
+	if (f_debug)
+	    fprintf(stderr, "  [format]\n");
+	rc5 = scsi_format_status_poweron(dev, dp);
+    }
+	
+
+    if (rc1 > 0 || rc2 > 0 || rc3 > 0 || rc4 > 0 || rc5 > 0)
 	return 1;
-    if (rc1 == 0 && rc2 == 0)
+    
+    if (rc1 == 0 && rc2 == 0 && rc3 == 0 && rc4 == 0 && rc5 == 0)
 	return 0;
     
     return -1;

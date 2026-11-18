@@ -42,6 +42,19 @@
 #include "utils.h"
 
 
+uint64_t
+get_be(const uint8_t *p,
+       uint8_t len) {
+    uint64_t v = 0;
+
+    while (len-- > 0) {
+	v <<= 8;
+	v |= *p++;
+    }
+
+    return v;
+}
+
 uint16_t
 get_be16(const uint8_t *p)
 {
