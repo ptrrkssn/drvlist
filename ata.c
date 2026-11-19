@@ -155,6 +155,9 @@ ata_smart_attribute_temperature(const struct ata_smart_attribute *attr,
 }
 
 
+/*
+ * Execute a ATA SMART command
+ */
 int
 ata_cmd_smart(struct cam_device *dev,
 	      uint8_t code,
@@ -226,12 +229,14 @@ ata_cmd_smart(struct cam_device *dev,
         return -1;
     }
 
+#if 0
     if (ccb->ataio.resid != 0) {
         cam_freeccb(ccb);
         errno = EIO;
         return -1;
     }
-
+#endif
+    
     got = bufsize - ccb->ataio.resid;
     cam_freeccb(ccb);
     
@@ -250,7 +255,7 @@ ata_drive_temperature(struct cam_device *dev,
 
 
     len = ata_cmd_smart(dev, ATA_SMART_READ_DATA, data, sizeof(data));
-    if (len <= 0)
+    if (len < 0)
 	return len;
     if (len != SMART_DATA_SIZE) {
 	errno = EIO;
@@ -689,7 +694,7 @@ ata_selftest_status(struct cam_device *dev,
     index = buffer[ATA_SELF_TEST_INDEX_OFFSET];
 
     if (index == 0) {
-        dp->raw.selftest_status = DRIVE_SELFTEST_NONE;
+        dp->raw.selftest.status = DRIVE_SELFTEST_NONE;
         return (0);
     }
 
@@ -718,7 +723,7 @@ ata_selftest_status(struct cam_device *dev,
      status_byte = buffer[entry_offset + 1];
      status = (status_byte >> 4) & 0x0f;
      
-     dp->raw.selftest_status = classify_ata_selftest(status);
+     dp->raw.selftest.status = classify_ata_selftest(status);
      
      poh = get_le16(&buffer[entry_offset + 2]);
      if (poh > dp->raw.power_on_hours)

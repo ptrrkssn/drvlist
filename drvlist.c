@@ -66,12 +66,14 @@ char *argv0 = "drvlist";
 
 int f_verbose = 0;
 int f_debug = 0;
-int f_phys = 0;
 int f_temp = 0;
 int f_smart = 0;
 int f_tests = 0;
-int f_poweron = 0;
+int f_hours = 0;
+int f_type = 1;
 int f_driver = 0;
+int f_path = 0;
+int f_phys = 0;
 int f_endurance = 0;
 int f_multipath = 0;
 int f_maxwidth = 22;
@@ -134,7 +136,7 @@ get_health_status(DRIVE *dp) {
 	return -1;
     }
 
-    switch (dp->type) {
+    switch (dp->raw.type) {
     case DRIVE_TYPE_SCSI:
 	rc = scsi_health_status(dp);
 	break;
@@ -281,20 +283,20 @@ do_device(char *dname) {
 		dp->size = size2str(msize);
 	    dp->driver = strdup(drvbuf);
 
-	    dp->type = get_drive_type(cam);
+	    dp->raw.type = get_drive_type(cam);
 
 	    /* Just in case get_drive_type fails */
-	    if (dp->type == DRIVE_TYPE_UNKNOWN) {
+	    if (dp->raw.type == DRIVE_TYPE_UNKNOWN) {
 		if (strcmp(cam->given_dev_name, "nda") == 0)
-		    dp->type = DRIVE_TYPE_NVME;
+		    dp->raw.type = DRIVE_TYPE_NVME;
 		else if (strcmp(cam->given_dev_name, "ada") == 0)
-		    dp->type = DRIVE_TYPE_ATA;
+		    dp->raw.type = DRIVE_TYPE_ATA;
 		else if (strcmp(cam->given_dev_name, "da") == 0) {
-		    dp->type = DRIVE_TYPE_SCSI;
+		    dp->raw.type = DRIVE_TYPE_SCSI;
 		}
 	    }
 		    
-	    if (dp->type == DRIVE_TYPE_NVME) {
+	    if (dp->raw.type == DRIVE_TYPE_NVME) {
 		/* NVME device */
 		char npath[1024];
 
@@ -337,11 +339,10 @@ do_device(char *dname) {
 		    dp->phys = strdup(physbuf);
 		}
 
-		if (dp->type == DRIVE_TYPE_ATA) {
+		if (dp->raw.type == DRIVE_TYPE_ATA) {
 		    /* ATA device */
 		    ata_identify(cam, &dp->vendor, &dp->product, &dp->revision, &have_selftest);
 		    dp->flags.have_selftest = have_selftest;
-		    dp->type = DRIVE_TYPE_ATA;
 		}  
 		
 		/* Probably only da (SAS/SCSI) drives */
@@ -380,7 +381,8 @@ do_device(char *dname) {
 		
 	    }
 
-
+	    dp->type = strdup(drive_type2str(dv[i].raw.type));
+	    
 	    rc = get_health_status(dp);
 	    if (rc > 0) {
 		char buf[256];
@@ -392,7 +394,7 @@ do_device(char *dname) {
 
 		if (dp->raw.power_on_hours != DRIVE_NO_POWER_ON_HOURS) {
 		    sprintf(buf, "%zu", dp->raw.power_on_hours);
-		    dp->poweron = strdup(buf);
+		    dp->hours = strdup(buf);
 		}
 
 		if (dp->raw.endurance_used != DRIVE_NO_ENDURANCE_USED) {
@@ -401,7 +403,26 @@ do_device(char *dname) {
 		}
 		
 		dp->smart = strdup(drive_smart_status2str(dp->raw.smart_status));
-		dp->tests = strdup(drive_selftest_status2str(dp->raw.selftest_status));
+
+		if (f_tests > 1 &&
+		    !(dp->raw.selftest.status == DRIVE_SELFTEST_UNKNOWN ||
+		      dp->raw.selftest.status == DRIVE_SELFTEST_NONE)) {
+		    char buf[2048];
+		    size_t len;
+
+		    
+		    len = snprintf(buf, sizeof(buf), "%s - %u/%u OK",
+				   drive_selftest_status2str(dp->raw.selftest.status),
+				   dp->raw.selftest.passed,
+				   dp->raw.selftest.tests);
+		    if (dp->raw.selftest.aborted)
+			len += snprintf(buf+len, sizeof(buf)-len, ", %u Aborted", dp->raw.selftest.aborted);
+		    if (dp->raw.selftest.running)
+			len += snprintf(buf+len, sizeof(buf)-len, ", %u Running", dp->raw.selftest.running);
+		    
+		    dp->tests = strdup(buf);
+		} else
+		    dp->tests = strdup(drive_selftest_status2str(dp->raw.selftest.status));
 	    }
 	    dc++;
 	} 
@@ -498,8 +519,9 @@ main(int argc,
     int templen = 4;
     int smartlen = 5;
     int testslen = 5;
-    int poweronlen = 7;
+    int hourslen = 5;
     int usedlen = 4;
+    int typelen = 4;
 
 
     argv0 = argv[0];
@@ -616,13 +638,16 @@ main(int argc,
 	    f_smart++;
 	    f_tests++;
 	    if (f_verbose > 2) {
-		f_poweron++;
+		f_hours++;
 		if (f_verbose > 3) {
 		    f_endurance++;
 		    if (f_verbose > 4) {
 			f_driver++;
 			if (f_verbose > 5) {
-			    f_phys++;
+			    f_path++;
+			    if (f_verbose > 6) {
+				f_phys++;
+			    }
 			}
 		    }
 		}
@@ -689,10 +714,11 @@ main(int argc,
 	strntrim(dv[i].path, &pathlen, f_maxwidth);
 	strntrim(dv[i].phys, &physlen, f_maxwidth);
 	strntrim(dv[i].size, &sizelen, f_maxwidth);
+	strntrim(dv[i].type, &typelen, f_maxwidth);
 	strntrim(dv[i].temp, &templen, f_maxwidth);
 	strntrim(dv[i].smart, &smartlen, f_maxwidth);
 	strntrim(dv[i].tests, &testslen, f_maxwidth);
-	strntrim(dv[i].poweron, &poweronlen, f_maxwidth);
+	strntrim(dv[i].hours, &hourslen, f_maxwidth);
 	strntrim(dv[i].used, &usedlen, f_maxwidth);
     }
 
@@ -716,19 +742,22 @@ main(int argc,
 	if (f_tests)
 	    p_field("TESTS", -testslen, f_sep);
 
+	if (f_hours)
+	    p_field("HOURS", hourslen, f_sep);
+
 	if (f_endurance)
 	    p_field("USED", usedlen, f_sep);
 
-	if (f_poweron)
-	    p_field("POWERON", poweronlen, f_sep);
-
-	p_field("TYPE", -5, f_sep);
+	if (f_type)
+	    p_field("TYPE", -typelen, f_sep);
+	
 	p_field("NAMES", -nameslen, f_sep);
 	
-	if (f_driver) {
+	if (f_driver)
 	    p_field("DRV.", -drvlen, f_sep);
+
+	if (f_path)
 	    p_field("PATH", -pathlen, f_sep);
-	}
 	
 	if (f_phys)
 	    p_field("PHYS", -physlen, f_sep);
@@ -753,20 +782,22 @@ main(int argc,
 	if (f_tests)
 	    p_field(dv[i].tests, -testslen, f_sep);
 
+	if (f_hours)
+	    p_field(dv[i].hours, hourslen, f_sep);
+
 	if (f_endurance)
 	    p_field(dv[i].used, usedlen, f_sep);
 
-	if (f_poweron)
-	    p_field(dv[i].poweron, poweronlen, f_sep);
-
-	p_field(drive_type2str(dv[i].type), -5, f_sep);
+	if (f_type)
+	    p_field(dv[i].type, -typelen, f_sep);
 		
 	p_field(dv[i].names, -nameslen, f_sep);
 	       
-	if (f_driver) {
+	if (f_driver)
 	    p_field(dv[i].driver, -drvlen, f_sep);
+
+	if (f_path)
 	    p_field(dv[i].path, -pathlen, f_sep);
-	}
 	
 	if (f_phys)
 	    p_field(dv[i].phys, -physlen, f_sep);

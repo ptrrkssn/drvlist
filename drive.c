@@ -49,7 +49,7 @@ int ds = 0;
 void
 drive_init(DRIVE *dp) {
     memset(dp, 0, sizeof(*dp));
-    dp->type = DRIVE_TYPE_UNKNOWN;
+    dp->raw.type = DRIVE_TYPE_UNKNOWN;
     dp->raw.power_on_hours = DRIVE_NO_POWER_ON_HOURS;
     dp->raw.endurance_used = DRIVE_NO_ENDURANCE_USED;
     dp->raw.temperature    = DRIVE_NO_TEMPERATURE;

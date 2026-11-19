@@ -413,7 +413,7 @@ scsi_supported_log_pages(struct cam_device *dev,
 
 
     if (f_debug) 
-	fprintf(stderr, "\t%2zu Pages:",
+	fprintf(stderr, "\t%zu Pages:",
 		len-4);
     
     for (off = 4; off < len; off++) {
@@ -740,8 +740,8 @@ scsi_ie_status(struct cam_device *dev,
 
 
 static enum drive_selftest_status
-classify_selftest_result(uint8_t code) {
-    switch (code) {
+classify_selftest_result(uint8_t result) {
+    switch (result) {
     case 0x0:
         return (DRIVE_SELFTEST_PASSED);
 
@@ -785,37 +785,52 @@ selftest_results_handler(uint16_t code,
     if (length < 16)
 	return 0;
 	
-    switch (code) {
-    case 0x0001:
-	/* Parameter code 1 is normally the newest entry */
-	
-	/*
-	 * Descriptor byte zero:
-	 *
-	 * bits 7-5  self-test code
-	 * bit  4    reserved
-	 * bits 3-0  self-test result
-	 */
-	selftest_code = (data[0] >> 5) & 0x07;
-	selftest_result = data[0] & 0x0f;
-	
-	/*
-	 * Bytes 2-3: accumulated power-on hours.
-	 */
-	poh = get_be16(&data[2]);
-	if (poh > 1 && poh != 0xffff) {
-	    if (f_debug)
-		fprintf(stderr, "\tSELFTEST RESULTS LOG: parameter=%u code=%u result=0x%x power_on_hours=%u\n",
-			code,
-			selftest_code,
-			selftest_result,
-			poh);
-	    if (dp->raw.power_on_hours == DRIVE_NO_POWER_ON_HOURS || poh > dp->raw.power_on_hours)
-		dp->raw.power_on_hours = poh;
-	}
-	
-	dp->raw.selftest_status = classify_selftest_result(selftest_result);
-	rc = 1; /* Stop scanning other results */
+    /*
+     * Descriptor byte zero:
+     *
+     * bits 7-5  self-test code
+     * bit  4    reserved
+     * bits 3-0  self-test result
+     */
+    selftest_code = (data[0] >> 5) & 0x07;
+    selftest_result = data[0] & 0x0f;
+    
+    /*
+     * Bytes 2-3: accumulated power-on hours.
+     */
+    poh = get_be16(&data[2]);
+    if (f_debug)
+	fprintf(stderr, "\tSELFTEST RESULTS LOG: parameter=%u code=%u result=0x%x power_on_hours=%u\n",
+		code,
+		selftest_code,
+		selftest_result,
+		poh);
+    if (poh == 0x0000 || poh == 0xffff)
+	return 0;
+    
+    if (dp->raw.power_on_hours == DRIVE_NO_POWER_ON_HOURS || poh > dp->raw.power_on_hours)
+	dp->raw.power_on_hours = poh;
+    
+    /* Parameter code 1 is normally the newest entry */
+    if (code == 0x0001)
+	dp->raw.selftest.status = classify_selftest_result(selftest_result);
+    
+    dp->raw.selftest.tests++;
+    switch (dp->raw.selftest.status) {
+    case DRIVE_SELFTEST_PASSED:
+	dp->raw.selftest.passed++;
+	break;
+    case DRIVE_SELFTEST_FAILED:
+	dp->raw.selftest.failed++;
+	break;
+    case DRIVE_SELFTEST_ABORTED:
+	dp->raw.selftest.aborted++;
+	break;
+    case DRIVE_SELFTEST_RUNNING:
+	dp->raw.selftest.running++;
+	break;
+    case DRIVE_SELFTEST_UNKNOWN:
+    case DRIVE_SELFTEST_NONE:
 	break;
     }
     
@@ -860,8 +875,9 @@ scsi_health_status(DRIVE *dp) {
 	    fprintf(stderr, "  [ie]\n");
 	rc2 = scsi_ie_status(dp->cam, dp);
     }
-    
-    if (pages.temp && (dp->raw.temperature == 0xFF || 1)) {
+
+    /* Skip if we already got it from IE */
+    if (pages.temp && dp->raw.temperature == 0xFF) {
 	if (f_debug)
 	    fprintf(stderr, "  [temp]\n");
 	rc1 = scsi_drive_temperature(dp->cam, dp);

@@ -551,7 +551,7 @@ nvme_selftest_status(struct cam_device *dev,
     current_operation = buffer[0] & 0x0f;
 
     if (current_operation != 0) {
-        dp->raw.selftest_status = DRIVE_SELFTEST_RUNNING;
+        dp->raw.selftest.status = DRIVE_SELFTEST_RUNNING;
 
         /*
          * Byte one is current completion percentage.
@@ -570,13 +570,13 @@ nvme_selftest_status(struct cam_device *dev,
     status = buffer[NVME_SELF_TEST_HEADER_SIZE];
 
     result_code = status & 0x0f;
-    dp->raw.selftest_status = classify_nvme_selftest(result_code);
+    dp->raw.selftest.status = classify_nvme_selftest(result_code);
 
 #if 0
     fprintf(stderr, "** result->state = %d\n", result->state);
 #endif
     
-    if (dp->raw.selftest_status == DRIVE_SELFTEST_NONE)
+    if (dp->raw.selftest.status == DRIVE_SELFTEST_NONE)
         return (0);
 
     /*

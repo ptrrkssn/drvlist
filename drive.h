@@ -70,7 +70,6 @@ enum drive_selftest_status {
 
 
 typedef struct {
-    enum drive_type type;
     struct {
 	unsigned int have_selftest;
     } flags;
@@ -85,17 +84,26 @@ typedef struct {
     char *driver;    /* Controller */
     char *path;
     char *phys;
+    char *type;
     char *size;
     char *temp;
     char *smart;
     char *tests;
-    char *poweron;
+    char *hours;
     char *used;
 
     /* Binary raw data */
     struct {
+	enum drive_type type;
 	enum drive_smart_status smart_status;
-	enum drive_selftest_status selftest_status;
+	struct {
+	    enum drive_selftest_status status;
+	    uint16_t tests;
+	    uint16_t running;
+	    uint16_t passed;
+	    uint16_t failed;
+	    uint16_t aborted;
+	} selftest;
 	uint64_t power_on_hours;
 	uint16_t endurance_used;
 	uint16_t temperature;
