@@ -45,7 +45,10 @@ enum drive_type {
     DRIVE_TYPE_SCSI    = 1,
     DRIVE_TYPE_ATA     = 2,
     DRIVE_TYPE_SATL    = 3, /* ATA drive on SAS/USB controller */
-    DRIVE_TYPE_NVME    = 4
+    DRIVE_TYPE_NVME    = 4,
+    
+    DRIVE_TYPE_ATAPI   = 5, /* CD, DVD */
+    DRIVE_TYPE_MMCSD   = 6  /* MMC, SD, SDIO cards */
 };
 
 enum drive_smart_status {
@@ -71,6 +74,7 @@ typedef struct {
     struct {
 	unsigned int have_selftest;
     } flags;
+    struct cam_device *cam;
     
     /* Printable information */
     char *ident;     /* Unique ID (serial number) */

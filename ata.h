@@ -63,7 +63,6 @@ ata_tests_status(struct cam_device *dev,
 
 
 extern int
-ata_health_status(struct cam_device *dev,
-		  DRIVE *dp);
+ata_health_status(DRIVE *dp);
 
 #endif

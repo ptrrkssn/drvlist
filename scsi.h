@@ -54,8 +54,7 @@ scsi_selftest_results_status(struct cam_device *dev,
 		       DRIVE *dp);
 
 extern int
-scsi_health_status(struct cam_device *dev,
-		       DRIVE *dp);
+scsi_health_status(DRIVE *dp);
 
 extern int
 scsi_drive_is_satl(struct cam_device *dev);

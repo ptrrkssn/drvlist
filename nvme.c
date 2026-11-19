@@ -612,20 +612,19 @@ nvme_selftest_status(struct cam_device *dev,
 }
 
 int
-nvme_health_status(struct cam_device *dev,
-		   DRIVE *dp) {
+nvme_health_status(DRIVE *dp) {
     int rc1 = 0, rc2 = 0;
 
 
     
     if (f_debug)
 	fprintf(stderr, "  [smart & temp]\n");
-    rc1 = nvme_smart_status(dev, dp);
+    rc1 = nvme_smart_status(dp->cam, dp);
 
     if (dp->flags.have_selftest) {
 	if (f_debug)
 	    fprintf(stderr, "  [selftest]\n");
-	rc2 = nvme_selftest_status(dev, dp);
+	rc2 = nvme_selftest_status(dp->cam, dp);
     }
 
     if (rc1 > 0 || rc2 > 0)

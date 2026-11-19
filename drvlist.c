@@ -48,6 +48,7 @@
 #include <sys/stat.h>
 
 #include <camlib.h>
+#include <cam/cam_ccb.h>
 #include <cam/scsi/scsi_message.h>
 #include <cam/ata/ata_all.h>
 #include <cam/mmc/mmc_all.h>
@@ -81,24 +82,72 @@ char *f_sort = NULL;
 
 
 
+enum drive_type
+get_drive_type(struct cam_device *dev) {
+    union ccb *ccb;
+    cam_proto protocol;
+    
+    
+    ccb = cam_getccb(dev);
+    ccb->ccb_h.func_code = XPT_GDEV_TYPE;
+
+    if (cam_send_ccb(dev, ccb) < 0) {
+	cam_freeccb(ccb);
+	return DRIVE_TYPE_UNKNOWN;
+    }
+
+    if ((ccb->ccb_h.status & CAM_STATUS_MASK) != CAM_REQ_CMP) {
+	cam_freeccb(ccb);
+	errno = EIO;
+	return DRIVE_TYPE_UNKNOWN;
+    }
+
+    protocol = ccb->cgd.protocol;
+    cam_freeccb(ccb);
+    
+    switch (protocol) {
+    case PROTO_SCSI:
+	if (scsi_drive_is_satl(dev))
+	    return DRIVE_TYPE_SATL;
+	return DRIVE_TYPE_SCSI;
+    case PROTO_ATA:
+	return DRIVE_TYPE_ATA;
+    case PROTO_ATAPI:
+	return DRIVE_TYPE_ATAPI;
+    case PROTO_MMCSD:
+	return DRIVE_TYPE_MMCSD;
+    case PROTO_NVME:
+	return DRIVE_TYPE_NVME;
+    default:
+	return DRIVE_TYPE_UNKNOWN;
+    }
+}
+
+
 int
-get_health_status(struct cam_device *dev,
-		  DRIVE *dp) {
+get_health_status(DRIVE *dp) {
     int rc;
 
     
-    if (!dev || !dp) {
+    if (!dp) {
 	errno = EINVAL;
 	return -1;
     }
 
-    if (strcmp(dev->given_dev_name, "da") == 0)
-	rc = scsi_health_status(dev, dp);
-    else if (strcmp(dev->given_dev_name, "ada") == 0)
-	rc = ata_health_status(dev, dp);
-    else if (strcmp(dev->given_dev_name, "nda") == 0)
-	rc = nvme_health_status(dev, dp);
-    else {
+    switch (dp->type) {
+    case DRIVE_TYPE_SCSI:
+	rc = scsi_health_status(dp);
+	break;
+    case DRIVE_TYPE_SATL:
+	rc = scsi_health_status(dp);
+	break;
+    case DRIVE_TYPE_ATA:
+	rc = ata_health_status(dp);
+	break;
+    case DRIVE_TYPE_NVME:
+	rc = nvme_health_status(dp);
+	break;
+    default:
 	errno = ENOENT;
 	rc = -1;
     }
@@ -215,23 +264,39 @@ do_device(char *dname) {
 	    strdupcat(&dp->names, dname);
 	    strdupcat(&dp->path, pnbuf);
 	    strdupcat(&dp->driver, drvbuf);
+
+	    cam_close_device(cam);
+	    close(fd);
 	} else {
 	    /* New drive */
 
 	    drive_init(dp);
 	    
+	    dp->cam = cam;
 	    dp->ident = ident;
+	    
 	    dp->names = strdup(dname);
 	    dp->path = strdup(pnbuf);
 	    if (msize > 0)
 		dp->size = size2str(msize);
 	    dp->driver = strdup(drvbuf);
-	    
-	    if (strcmp(cam->given_dev_name, "nda") == 0) {
+
+	    dp->type = get_drive_type(cam);
+
+	    /* Just in case get_drive_type fails */
+	    if (dp->type == DRIVE_TYPE_UNKNOWN) {
+		if (strcmp(cam->given_dev_name, "nda") == 0)
+		    dp->type = DRIVE_TYPE_NVME;
+		else if (strcmp(cam->given_dev_name, "ada") == 0)
+		    dp->type = DRIVE_TYPE_ATA;
+		else if (strcmp(cam->given_dev_name, "da") == 0) {
+		    dp->type = DRIVE_TYPE_SCSI;
+		}
+	    }
+		    
+	    if (dp->type == DRIVE_TYPE_NVME) {
 		/* NVME device */
 		char npath[1024];
-
-		dp->type = DRIVE_TYPE_NVME;
 
 		/* Check to make sure it is a local NVME controller */
 		if (strcmp(cam->sim_name, "nvme") == 0) {
@@ -272,18 +337,12 @@ do_device(char *dname) {
 		    dp->phys = strdup(physbuf);
 		}
 
-		if (strcmp(cam->given_dev_name, "ada") == 0) {
+		if (dp->type == DRIVE_TYPE_ATA) {
 		    /* ATA device */
 		    ata_identify(cam, &dp->vendor, &dp->product, &dp->revision, &have_selftest);
 		    dp->flags.have_selftest = have_selftest;
 		    dp->type = DRIVE_TYPE_ATA;
-		}  else if (strcmp(cam->given_dev_name, "da") == 0) {
-		    if (scsi_drive_is_satl(cam)) {
-			dp->type = DRIVE_TYPE_SATL;
-		    } else {
-			dp->type = DRIVE_TYPE_SCSI; /* Check for USB/MMC */
-		    }
-		}
+		}  
 		
 		/* Probably only da (SAS/SCSI) drives */
 		if (!dp->vendor && cam->inq_data.vendor[0])
@@ -306,6 +365,7 @@ do_device(char *dname) {
 			    dp->product = strdup(cp);
 			}
 		    }
+		    
 		    if ((strcmp(dp->vendor, "ATA") == 0 || strcmp(dp->vendor, "USB") == 0)) {
 			/* Hack... */
 			if (strncmp(dp->product, "SSDSC", 5) == 0) {
@@ -321,7 +381,7 @@ do_device(char *dname) {
 	    }
 
 
-	    rc = get_health_status(cam, dp);
+	    rc = get_health_status(dp);
 	    if (rc > 0) {
 		char buf[256];
 		
@@ -336,7 +396,7 @@ do_device(char *dname) {
 		}
 
 		if (dp->raw.endurance_used != DRIVE_NO_ENDURANCE_USED) {
-		    sprintf(buf, "%d", dp->raw.endurance_used);
+		    sprintf(buf, "%d%%", dp->raw.endurance_used);
 		    dp->used = strdup(buf);
 		}
 		
@@ -662,7 +722,7 @@ main(int argc,
 	if (f_poweron)
 	    p_field("POWERON", poweronlen, f_sep);
 
-	p_field("TYPE", 4, f_sep);
+	p_field("TYPE", -5, f_sep);
 	p_field("NAMES", -nameslen, f_sep);
 	
 	if (f_driver) {
@@ -699,7 +759,7 @@ main(int argc,
 	if (f_poweron)
 	    p_field(dv[i].poweron, poweronlen, f_sep);
 
-	p_field(drive_type2str(dv[i].type), 4, f_sep);
+	p_field(drive_type2str(dv[i].type), -5, f_sep);
 		
 	p_field(dv[i].names, -nameslen, f_sep);
 	       

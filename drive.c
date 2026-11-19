@@ -136,5 +136,9 @@ drive_type2str(enum drive_type type) {
 	return "SATL";
     case DRIVE_TYPE_NVME:
 	return "NVME";
+    case DRIVE_TYPE_ATAPI:
+	return "ATAPI";
+    case DRIVE_TYPE_MMCSD:
+	return "MMCSD";
     }
 }

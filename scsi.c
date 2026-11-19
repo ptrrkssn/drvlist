@@ -247,15 +247,15 @@ scsi_cmd_log_sense(struct cam_device *dev,
     memset(buf, 0, bufsize);
 
     cam_fill_csio(&ccb->csio,
-        1,                      /* retries */
-        NULL,                   /* callback */
-        CAM_DIR_IN,
-	CAM_TAG_ACTION_NONE,
-        buf,
-        bufsize,
-        SSD_FULL_SIZE,
-	sizeof(*cdb),           /* CDB length */
-        5000);                  /* timeout ms */
+		  1,                      /* retries */
+		  NULL,                   /* callback */
+		  CAM_DIR_IN | CAM_DEV_QFRZDIS,
+		  CAM_TAG_ACTION_NONE,
+		  buf,
+		  bufsize,
+		  SSD_FULL_SIZE,
+		  sizeof(*cdb),           /* CDB length */
+		  5000);                  /* timeout ms */
     
     cdb = (struct log_sense_cdb *)&ccb->csio.cdb_io.cdb_bytes;
     memset(cdb, 0, sizeof(*cdb));
@@ -843,8 +843,7 @@ scsi_drive_is_satl(struct cam_device *dev) {
 
 
 int
-scsi_health_status(struct cam_device *dev,
-		   DRIVE *dp) {
+scsi_health_status(DRIVE *dp) {
     int rc1 = 0, rc2 = 0, rc3 = 0, rc4 = 0, rc5 = 0;
     struct supported_log_pages pages;
 
@@ -853,38 +852,38 @@ scsi_health_status(struct cam_device *dev,
 	fprintf(stderr, "  [supported]\n");
 
     memset(&pages, 0, sizeof(pages));
-    scsi_supported_log_pages(dev, &pages);
+    scsi_supported_log_pages(dp->cam, &pages);
     
 
     if (pages.ie) {
 	if (f_debug)
 	    fprintf(stderr, "  [ie]\n");
-	rc2 = scsi_ie_status(dev, dp);
+	rc2 = scsi_ie_status(dp->cam, dp);
     }
     
     if (pages.temp && (dp->raw.temperature == 0xFF || 1)) {
 	if (f_debug)
 	    fprintf(stderr, "  [temp]\n");
-	rc1 = scsi_drive_temperature(dev, dp);
+	rc1 = scsi_drive_temperature(dp->cam, dp);
     }
 
 
     if (pages.selftest) {
 	if (f_debug)
 	    fprintf(stderr, "  [selftest]\n");
-	rc3 = scsi_selftest_results_status(dev, dp);
+	rc3 = scsi_selftest_results_status(dp->cam, dp);
     }
 
     if (pages.ssd_media) {
 	if (f_debug)
 	    fprintf(stderr, "  [ssd]\n");
-	rc4 = scsi_endurance_used(dev, dp);
+	rc4 = scsi_endurance_used(dp->cam, dp);
     }
 
     if (pages.format_status) {
 	if (f_debug)
 	    fprintf(stderr, "  [format]\n");
-	rc5 = scsi_format_status_poweron(dev, dp);
+	rc5 = scsi_format_status_poweron(dp->cam, dp);
     }
 	
 

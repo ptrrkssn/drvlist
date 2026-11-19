@@ -61,7 +61,6 @@ nvme_tests_status(struct cam_device *dev,
 
 
 extern int
-nvme_health_status(struct cam_device *dev,
-		   DRIVE *dp);
+nvme_health_status(DRIVE *dp);
 
 #endif

@@ -106,8 +106,10 @@ struct ata_smart_attribute {
     uint8_t reserved;
 };
 
+
 static int
-ata_smart_checksum_valid(const uint8_t *buffer, size_t length)
+ata_smart_checksum_valid(const uint8_t *buffer,
+			 size_t length)
 {
     unsigned int sum;
     size_t i;
@@ -183,14 +185,14 @@ ata_cmd_smart(struct cam_device *dev,
      * device to the host.
      */
     cam_fill_ataio(&ccb->ataio,
-        1,                      /* retries */
-        NULL,                   /* completion callback */
-        CAM_DIR_IN,             /* device to host */
-        CAM_TAG_ACTION_NONE,    /* non-NCQ management command */
-        buf,
-        bufsize,
-        5000);                  /* timeout in milliseconds */
-
+		   1,                      /* retries */
+		   NULL,                   /* completion callback */
+		   CAM_DIR_IN | CAM_DEV_QFRZDIS,
+		   CAM_TAG_ACTION_NONE,    /* non-NCQ management command */
+		   buf,
+		   bufsize,
+		   5000);                  /* timeout in milliseconds */
+    
     /*
      * Construct:
      *
@@ -207,6 +209,8 @@ ata_cmd_smart(struct cam_device *dev,
 		  ATA_SMART_LBA,
 		  1);
 
+    ccb->ccb_h.flags |= CAM_DEV_QFRZDIS;
+    
     if (cam_send_ccb(dev, ccb) < 0) {
         saved_errno = errno != 0 ? errno : EIO;
         cam_freeccb(ccb);
@@ -608,13 +612,13 @@ ata_selftest_status(struct cam_device *dev,
     }
 
     cam_fill_ataio(&ccb->ataio,
-        1,
-        NULL,
-        CAM_DIR_IN,
-        CAM_TAG_ACTION_NONE,
-        buffer,
-        sizeof(buffer),
-        10000);
+		   1,
+		   NULL,
+		   CAM_DIR_IN | CAM_DEV_QFRZDIS,
+		   CAM_TAG_ACTION_NONE,
+		   buffer,
+		   sizeof(buffer),
+		   5000);
 
     /*
      * SMART READ LOG:
@@ -627,11 +631,11 @@ ata_selftest_status(struct cam_device *dev,
      * LBA high      = 0xc2
      */
     ata_28bit_cmd(&ccb->ataio,
-        ATA_CMD_SMART,
-        ATA_SMART_READ_LOG,
-        ATA_SMART_READ_LOG_LBA,
-        1);
-
+		  ATA_CMD_SMART,
+		  ATA_SMART_READ_LOG,
+		  ATA_SMART_READ_LOG_LBA,
+		  1);
+    
     if (cam_send_ccb(dev, ccb) < 0) {
         saved_errno = errno != 0 ? errno : EIO;
         cam_freeccb(ccb);
@@ -725,25 +729,24 @@ ata_selftest_status(struct cam_device *dev,
 
 
 int
-ata_health_status(struct cam_device *dev,
-		  DRIVE *dp) {
+ata_health_status( DRIVE *dp) {
     int rc1 = 0, rc2 = 0, rc3 = 0;
 
 
     if (f_debug)
 	fprintf(stderr, "  [temp]\n");
-    rc1 = ata_drive_temperature(dev, dp);
+    rc1 = ata_drive_temperature(dp->cam, dp);
     if (rc1 < 0)
 	return rc1;
     
     if (f_debug)
 	fprintf(stderr, "  [smart]\n");
-    rc2 = ata_smart_status(dev, dp);
+    rc2 = ata_smart_status(dp->cam, dp);
 
     if (dp->flags.have_selftest) {
 	if (f_debug)
 	    fprintf(stderr, "  [selftest]\n");
-	rc3 = ata_selftest_status(dev, dp);
+	rc3 = ata_selftest_status(dp->cam, dp);
     }
 
     if (rc1 > 0 || rc2 > 0 || rc3 > 0)
