@@ -75,14 +75,10 @@ extern char *argv0;
 #define SCSI_IE_LOG_PAGE                     0x2f
 #define SCSI_IE_LOG_SUBPAGE                  0x00
 
+#define SCSI_START_STOP_CYCLE_LOG_PAGE       0x0e
+#define SCSI_START_STOP_CYCLE_LOG_SUBPAGE    0x00
+
 #define LOG_SENSE_BUFFER_SIZE                4096
-#if 0
-#define LOG_SENSE_FORMAT_STATUS_BUFFER_SIZE  4096
-#define LOG_SENSE_TEMP_BUFFER_SIZE           252
-#define LOG_SENSE_IE_BUFFER_SIZE             252
-#define LOG_SENSE_SELFTEST_BUFFER_SIZE       4096
-#define LOG_SENSE_SSD_MEDIA_BUFFER_SIZE      252
-#endif
 
 #define SELFTEST_PARAMETER_DATA_LENGTH       16
 
@@ -125,6 +121,7 @@ struct supported_log_pages {
     unsigned int selftest : 1;
     unsigned int ssd_media : 1;
     unsigned int format_status : 1;
+    unsigned int start_stop_cycle : 1;
 };
 
 
@@ -163,33 +160,33 @@ is_invalid(uint8_t *data,
 }
 
 int
-scsi_drive_has_vpd_page(struct cam_device *dev,
+drive_scsi_has_vpd_page(DRIVE *dp,
 			uint8_t page_id,
 			int retry_count,
 			int timeout,
-			int verbosemode)
-{
+			int verbosemode) {
 	union ccb *ccb = NULL;
 	struct scsi_vpd_supported_page_list sup_pages;
 	int i;
 	int retval = 0;
 
-	ccb = cam_getccb(dev);
+
+	ccb = cam_getccb(dp->cam);
 	if (ccb == NULL)
 	    return -1;
 
 	memset(&sup_pages, 0, sizeof(sup_pages));
 
 	scsi_inquiry(&ccb->csio,
-		     /*retries*/ retry_count,
-		     /*cbfcnp*/ NULL,
-		     /* tag_action */ MSG_SIMPLE_Q_TAG,
-		     /* inq_buf */ (uint8_t *)&sup_pages,
-		     /* inq_len */ sizeof(sup_pages),
-		     /* evpd */ 1,
-		     /* page_code */ SVPD_SUPPORTED_PAGE_LIST,
-		     /* sense_len */ SSD_FULL_SIZE,
-		     /* timeout */ timeout ? timeout : 5000);
+	 /*retries*/ retry_count,
+	  /*cbfcnp*/ NULL,
+    /* tag_action */ CAM_TAG_ACTION_NONE, /* MSG_SIMPLE_Q_TAG, */
+       /* inq_buf */ (uint8_t *)&sup_pages,
+       /* inq_len */ sizeof(sup_pages),
+	  /* evpd */ 1,
+     /* page_code */ SVPD_SUPPORTED_PAGE_LIST,
+     /* sense_len */ SSD_FULL_SIZE,
+       /* timeout */ timeout ? timeout : 5000);
 
 	/* Disable freezing the device queue */
 	ccb->ccb_h.flags |= CAM_DEV_QFRZDIS;
@@ -197,7 +194,7 @@ scsi_drive_has_vpd_page(struct cam_device *dev,
 	if (retry_count != 0)
 		ccb->ccb_h.flags |= CAM_PASS_ERR_RECOVER;
 
-	if (cam_send_ccb(dev, ccb) < 0) {
+	if (cam_send_ccb(dp->cam, ccb) < 0) {
 		cam_freeccb(ccb);
 		ccb = NULL;
 		retval = -1;
@@ -206,7 +203,7 @@ scsi_drive_has_vpd_page(struct cam_device *dev,
 
 	if ((ccb->ccb_h.status & CAM_STATUS_MASK) != CAM_REQ_CMP) {
 		if (verbosemode != 0)
-			cam_error_print(dev, ccb, CAM_ESF_ALL,
+			cam_error_print(dp->cam, ccb, CAM_ESF_ALL,
 					CAM_EPF_ALL, stderr);
 		retval = -1;
 		goto bailout;
@@ -226,11 +223,11 @@ bailout:
 }
 
 ssize_t
-scsi_cmd_log_sense(struct cam_device *dev,
-		   uint8_t page,
-		   uint8_t subpage,
-		   uint8_t *buf,
-		   size_t bufsize) {
+drive_scsi_cmd_log_sense(DRIVE *dp,
+			 uint8_t page,
+			 uint8_t subpage,
+			 uint8_t *buf,
+			 size_t bufsize) {
     union ccb *ccb;
     struct log_sense_cdb *cdb;
     ssize_t len;
@@ -240,7 +237,7 @@ scsi_cmd_log_sense(struct cam_device *dev,
     int saved_errno;
     
 
-    ccb = cam_getccb(dev);
+    ccb = cam_getccb(dp->cam);
     if (!ccb)
 	return -1;
 
@@ -265,12 +262,12 @@ scsi_cmd_log_sense(struct cam_device *dev,
     cdb->opcode = SCSI_LOG_SENSE;
     put_be16(cdb->alloc_len, bufsize);
     
-    if (cam_send_ccb(dev, ccb) < 0) {
+    if (cam_send_ccb(dp->cam, ccb) < 0) {
 	saved_errno = errno;
 	if (f_debug)
 	    fprintf(stderr,
 		    "%s: Error: %s%u: LOG SENSE 0x%02x/0x%02x Failed: cam_send_ccb: %s\n",
-		    argv0, dev->given_dev_name, dev->given_unit_number,
+		    argv0, dp->cam->given_dev_name, dp->cam->given_unit_number,
 		    page, subpage, 
 		    strerror(errno));
 	
@@ -287,10 +284,10 @@ scsi_cmd_log_sense(struct cam_device *dev,
     if (cam_status != CAM_REQ_CMP) {
 	if (f_debug) {
 	    fprintf(stderr, "%s: Error: %s%u: LOG SENSE 0x%02x/0x%02x Failed: CAM status 0x%x\n",
-		    argv0, dev->given_dev_name, dev->given_unit_number,
+		    argv0, dp->cam->given_dev_name, dp->cam->given_unit_number,
 		    page, subpage, 
 		    cam_status);
-	    scsi_sense_print(dev, &ccb->csio, stderr);
+	    scsi_sense_print(dp->cam, &ccb->csio, stderr);
 	}
 	errno = EBUSY;
         return -1;
@@ -315,7 +312,7 @@ scsi_cmd_log_sense(struct cam_device *dev,
 
     if (got < 4) {
 	fprintf(stderr, "%s: Error: %s%u: LOG SENSE 0x%02x/0x%02x Failed: Truncated LOG SENSE page\n",
-		argv0, dev->given_dev_name, dev->given_unit_number, 
+		argv0, dp->cam->given_dev_name, dp->cam->given_unit_number, 
 		page, subpage);
 	errno = EIO;
 	return -1;
@@ -332,7 +329,7 @@ scsi_cmd_log_sense(struct cam_device *dev,
     if ((buf[0] & 0x3f) != page) {
 	if (f_debug)
 	    fprintf(stderr, "%s: Error: %s%u: LOG SENSE failed: 0x%02x: Invalid Page Code\n",
-		    argv0, dev->given_dev_name, dev->given_unit_number,
+		    argv0, dp->cam->given_dev_name, dp->cam->given_unit_number,
 		    (buf[0] & 0x3f));
 
 	errno = EINVAL;
@@ -345,7 +342,7 @@ scsi_cmd_log_sense(struct cam_device *dev,
     if (len > bufsize) {
 	if (f_debug)
 	    fprintf(stderr, "%s: Error: %s%u: LOG SENSE buffer too small: len=%zd > bufsize = %zd\n",
-		    argv0, dev->given_dev_name, dev->given_unit_number,
+		    argv0, dp->cam->given_dev_name, dp->cam->given_unit_number,
 		    len, bufsize);
 	errno = EINVAL;
 	return -1;
@@ -354,7 +351,7 @@ scsi_cmd_log_sense(struct cam_device *dev,
     if (got != len) {
 	if (f_debug)
 	    fprintf(stderr, "%s: Error: %s%u: LOG SENSE buffer length inconsistent: len=%zd vs got=%zd\n",
-		    argv0, dev->given_dev_name, dev->given_unit_number,
+		    argv0, dp->cam->given_dev_name, dp->cam->given_unit_number,
 		    len, got);
 	errno = EINVAL;
 	return -1;
@@ -365,11 +362,11 @@ scsi_cmd_log_sense(struct cam_device *dev,
 	       
 
 int
-scsi_foreach_log_sense(struct cam_device *dev,
-		       uint8_t page,
-		       uint8_t subpage,
-		       int (*param_handler)(uint16_t code, uint8_t control, uint8_t length, uint8_t *data, void *xp),
-		       void *xp) {
+drive_scsi_foreach_log_sense(DRIVE *dp,
+			     uint8_t page,
+			     uint8_t subpage,
+			     int (*param_handler)(uint16_t code, uint8_t control, uint8_t length, uint8_t *data, void *xp),
+			     void *xp) {
     uint8_t buf[LOG_SENSE_BUFFER_SIZE];
     ssize_t len;
     off_t off;
@@ -377,7 +374,7 @@ scsi_foreach_log_sense(struct cam_device *dev,
     int rc = 0;
     
     
-    len = scsi_cmd_log_sense(dev, page, subpage, buf, sizeof(buf));
+    len = drive_scsi_cmd_log_sense(dp, page, subpage, buf, sizeof(buf));
     if (len < 0)
 	return -1;
     
@@ -397,17 +394,17 @@ scsi_foreach_log_sense(struct cam_device *dev,
 
 
 int
-scsi_supported_log_pages(struct cam_device *dev,
-			 struct supported_log_pages *pages) {
+drive_scsi_supported_log_pages(DRIVE *dp,
+			       struct supported_log_pages *pages) {
     uint8_t buf[4096];
     ssize_t len;
     off_t off;
 
     
-    len = scsi_cmd_log_sense(dev,
-			     SCSI_SUPPORTED_LOGS_PAGE,
-			     SCSI_SUPPORTED_LOGS_SUBPAGE,
-			     buf, sizeof(buf));
+    len = drive_scsi_cmd_log_sense(dp,
+				   SCSI_SUPPORTED_LOGS_PAGE,
+				   SCSI_SUPPORTED_LOGS_SUBPAGE,
+				   buf, sizeof(buf));
     if (len < 0)
 	return -1;
 
@@ -438,6 +435,9 @@ scsi_supported_log_pages(struct cam_device *dev,
 	    case SCSI_FORMAT_STATUS_LOG_PAGE:
 		pages->format_status = 1;
 		break;
+	    case SCSI_START_STOP_CYCLE_LOG_PAGE:
+		pages->start_stop_cycle = 1;
+		break;
 	    }
 	}
     }
@@ -452,11 +452,11 @@ scsi_supported_log_pages(struct cam_device *dev,
 			 
 
 static int
-drive_temp_handler(uint16_t code,
-		   uint8_t control,
-		   uint8_t length,
-		   uint8_t *data,
-		   void *xp) {
+temperature_handler(uint16_t code,
+		    uint8_t control,
+		    uint8_t length,
+		    uint8_t *data,
+		    void *xp) {
     DRIVE *dp = (DRIVE *) xp;
     int rc = 0;
 
@@ -506,12 +506,104 @@ drive_temp_handler(uint16_t code,
 
 
 int
-scsi_drive_temperature(struct cam_device *dev,
-		       DRIVE *dp) {
-    return scsi_foreach_log_sense(dev,
-				  SCSI_TEMP_LOG_PAGE, SCSI_TEMP_LOG_SUBPAGE,
-				  drive_temp_handler,
-				  (void *) dp);
+drive_scsi_temperature(DRIVE *dp) {
+    return drive_scsi_foreach_log_sense(dp,
+					SCSI_TEMP_LOG_PAGE, SCSI_TEMP_LOG_SUBPAGE,
+					temperature_handler,
+					(void *) dp);
+}
+
+
+
+static int
+start_stop_cycle_handler(uint16_t code,
+			 uint8_t control,
+			 uint8_t length,
+			 uint8_t *data,
+			 void *xp) {
+    DRIVE *dp = (DRIVE *) xp;
+    int rc = 0;
+    uint64_t val;
+    double used = 0.0;
+    
+
+    switch (code) {
+    case 0x0001: /* Manufacture Date */
+	dp->made = strdupget((char *) data, length);
+	if (f_debug)
+	    fprintf(stderr, "\tSTART-STOP CYCLE LOG: manufacture date = %.*s\n",
+		    length, (char *) data);
+	break;
+	
+    case 0x0002: /* Accounting Date */
+	if (f_debug)
+	    fprintf(stderr, "\tSTART-STOP CYCLE LOG: accounting date  = %.*s\n",
+		    length, (char *) data);
+	break;
+	
+    case 0x0003: /* Specified Start-Stop Cycle Count */
+	val = get_be(data, length);
+	dp->raw.cycles.start_stop.specified = val;
+	if (f_debug)
+	    fprintf(stderr, "\tSTART-STOP CYCLE LOG: specified start-stop cycle count  = %zu\n", val);
+	break;
+
+    case 0x0004: /* Accumulated Start-Stop Cycle Count */
+	val = get_be(data, length);
+	dp->raw.cycles.start_stop.accumulated = val;
+	if (dp->raw.cycles.start_stop.specified != 0) {
+	    used = (double) val*100.0 / (double) dp->raw.cycles.start_stop.specified;
+	    if (dp->raw.endurance_used == DRIVE_NO_ENDURANCE_USED || used > dp->raw.endurance_used)
+		dp->raw.endurance_used = used;
+	}
+	if (f_debug) {
+	    fprintf(stderr, "\tSTART-STOP CYCLE LOG: accumulated start-stop cycle count  = %zu\n", val);
+	    if (used > 0)
+		fprintf(stderr, "\tSTART-STOP CYCLE LOG: accumulated start-stop cycle life  = %.1f %%\n",
+			used);
+	}
+	break;
+
+    case 0x0005: /* Specified Load-Unload Cycle Count */
+	val = get_be(data, length);
+	dp->raw.cycles.load_unload.specified = val;
+	if (f_debug)
+	    fprintf(stderr, "\tSTART-STOP CYCLE LOG: specified load-unload cycle count  = %zu\n", val);
+	break;
+
+    case 0x0006: /* Accumulated Load-Unload Cycle Count */
+	val = get_be(data, length);
+	dp->raw.cycles.load_unload.accumulated = val;
+	if (dp->raw.cycles.load_unload.specified != 0) {
+	    used = (double) val*100.0 / (double) dp->raw.cycles.load_unload.specified;
+	    if (dp->raw.endurance_used == DRIVE_NO_ENDURANCE_USED || used > dp->raw.endurance_used)
+		dp->raw.endurance_used = used;
+	}
+	if (f_debug) {
+	    fprintf(stderr, "\tSTART-STOP CYCLE LOG: accumulated load-unload cycle count  = %zu\n", val);
+	    if (dp->raw.cycles.load_unload.specified != 0)
+		fprintf(stderr, "\tSTART-STOP CYCLE LOG: accumulated load-unload cycle life  = %.1f %%\n",
+			used);
+	}
+	break;
+
+    default:
+	if (f_debug)
+	    fprintf(stderr, "\tSTART-STOP CYCLE LOG: code 0x%04x\n",
+		    code);
+	break;
+    } 
+    
+    return rc;
+}
+
+int
+drive_scsi_start_stop_cycle(DRIVE *dp) {
+    return drive_scsi_foreach_log_sense(dp,
+					SCSI_START_STOP_CYCLE_LOG_PAGE,
+					SCSI_START_STOP_CYCLE_LOG_SUBPAGE,
+					start_stop_cycle_handler,
+					(void *) dp);
 }
 
 
@@ -553,13 +645,12 @@ ssd_media_handler(uint16_t code,
 }
 
 int
-scsi_endurance_used(struct cam_device *dev,
-		    DRIVE *dp) {
-    return scsi_foreach_log_sense(dev,
-				  SCSI_SSD_MEDIA_LOG_PAGE,
-				  SCSI_SSD_MEDIA_LOG_SUBPAGE,
-				  ssd_media_handler,
-				  (void *) dp);
+drive_scsi_endurance_used(DRIVE *dp) {
+    return drive_scsi_foreach_log_sense(dp,
+					SCSI_SSD_MEDIA_LOG_PAGE,
+					SCSI_SSD_MEDIA_LOG_SUBPAGE,
+					ssd_media_handler,
+					(void *) dp);
 }
 
 
@@ -630,13 +721,12 @@ format_status_handler(uint16_t code,
 
 
 int
-scsi_format_status_poweron(struct cam_device *dev,
-			   DRIVE *dp) {
-    return scsi_foreach_log_sense(dev,
-				  SCSI_FORMAT_STATUS_LOG_PAGE,
-				  SCSI_FORMAT_STATUS_LOG_SUBPAGE,
-				  format_status_handler,
-				  (void *) dp);
+drive_scsi_format_status_poweron(DRIVE *dp) {
+    return drive_scsi_foreach_log_sense(dp,
+					SCSI_FORMAT_STATUS_LOG_PAGE,
+					SCSI_FORMAT_STATUS_LOG_SUBPAGE,
+					format_status_handler,
+					(void *) dp);
 }
 
 
@@ -722,21 +812,21 @@ ie_status_handler(uint16_t code,
     }
 
     if (f_debug && rc == 1)
-	fprintf(stderr, "\tIE STATUS: ASC=0x%02x ASCQ=0x%02x smart=%s\n",
+	fprintf(stderr, "\tINFORMATIONAL EXCEPTIONS LOG: ASC=0x%02x ASCQ=0x%02x -> SMART=%s\n",
 		asc, ascq, drive_smart_status2str(dp->raw.smart_status));
     
     return rc;
 }
 
 int
-scsi_ie_status(struct cam_device *dev,
-	       DRIVE *dp) {
-   return scsi_foreach_log_sense(dev,
-				  SCSI_IE_LOG_PAGE,
-				  SCSI_IE_LOG_SUBPAGE,
-				  ie_status_handler,
-				  (void *) dp);
+drive_scsi_ie_status(DRIVE *dp) {
+    return drive_scsi_foreach_log_sense(dp,
+					SCSI_IE_LOG_PAGE,
+					SCSI_IE_LOG_SUBPAGE,
+					ie_status_handler,
+					(void *) dp);
 }
+
 
 
 static enum drive_selftest_status
@@ -839,26 +929,25 @@ selftest_results_handler(uint16_t code,
 
 
 int
-scsi_selftest_results_status(struct cam_device *dev,
-			     DRIVE *dp) {
-   return scsi_foreach_log_sense(dev,
-				  SCSI_SELFTEST_RESULTS_LOG_PAGE,
-				  SCSI_SELFTEST_RESULTS_LOG_SUBPAGE,
-				  selftest_results_handler,
-				  (void *) dp);
+drive_scsi_selftest_results_status(DRIVE *dp) {
+   return drive_scsi_foreach_log_sense(dp,
+				       SCSI_SELFTEST_RESULTS_LOG_PAGE,
+				       SCSI_SELFTEST_RESULTS_LOG_SUBPAGE,
+				       selftest_results_handler,
+				       (void *) dp);
 }
 
 
 
 
 int
-scsi_drive_is_satl(struct cam_device *dev) {
-    return scsi_drive_has_vpd_page(dev, SVPD_ATA_INFORMATION, 1, 0, 0);
+drive_scsi_is_satl(DRIVE *dp) {
+    return drive_scsi_has_vpd_page(dp, SVPD_ATA_INFORMATION, 1, 0, 0);
 }
 
 
 int
-scsi_health_status(DRIVE *dp) {
+drive_scsi_health_status(DRIVE *dp) {
     int rc1 = 0, rc2 = 0, rc3 = 0, rc4 = 0, rc5 = 0;
     struct supported_log_pages pages;
 
@@ -867,41 +956,46 @@ scsi_health_status(DRIVE *dp) {
 	fprintf(stderr, "  [supported]\n");
 
     memset(&pages, 0, sizeof(pages));
-    scsi_supported_log_pages(dp->cam, &pages);
+    drive_scsi_supported_log_pages(dp, &pages);
     
 
     if (pages.ie) {
 	if (f_debug)
 	    fprintf(stderr, "  [ie]\n");
-	rc2 = scsi_ie_status(dp->cam, dp);
+	rc2 = drive_scsi_ie_status(dp);
     }
 
     /* Skip if we already got it from IE */
     if (pages.temp && dp->raw.temperature == 0xFF) {
 	if (f_debug)
 	    fprintf(stderr, "  [temp]\n");
-	rc1 = scsi_drive_temperature(dp->cam, dp);
+	rc1 = drive_scsi_temperature(dp);
     }
 
 
     if (pages.selftest) {
 	if (f_debug)
 	    fprintf(stderr, "  [selftest]\n");
-	rc3 = scsi_selftest_results_status(dp->cam, dp);
+	rc3 = drive_scsi_selftest_results_status(dp);
     }
 
     if (pages.ssd_media) {
 	if (f_debug)
 	    fprintf(stderr, "  [ssd]\n");
-	rc4 = scsi_endurance_used(dp->cam, dp);
+	rc4 = drive_scsi_endurance_used(dp);
     }
 
     if (pages.format_status) {
 	if (f_debug)
 	    fprintf(stderr, "  [format]\n");
-	rc5 = scsi_format_status_poweron(dp->cam, dp);
+	rc5 = drive_scsi_format_status_poweron(dp);
     }
-	
+
+    if (pages.start_stop_cycle) {
+	if (f_debug)
+	    fprintf(stderr, "  [start-stop cycle]\n");
+	drive_scsi_start_stop_cycle(dp);
+    }
 
     if (rc1 > 0 || rc2 > 0 || rc3 > 0 || rc4 > 0 || rc5 > 0)
 	return 1;

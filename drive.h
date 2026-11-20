@@ -38,17 +38,16 @@
 #define DRVLIST_DRIVE_H 1
 
 #include <stdint.h>
+#include <camlib.h>
 
-
-enum drive_type {
-    DRIVE_TYPE_UNKNOWN = 0,
-    DRIVE_TYPE_SCSI    = 1,
-    DRIVE_TYPE_ATA     = 2,
-    DRIVE_TYPE_SATL    = 3, /* ATA drive on SAS/USB controller */
-    DRIVE_TYPE_NVME    = 4,
-    
-    DRIVE_TYPE_ATAPI   = 5, /* CD, DVD */
-    DRIVE_TYPE_MMCSD   = 6  /* MMC, SD, SDIO cards */
+enum drive_protocol {
+    DRIVE_PROTO_UNKNOWN = 0,
+    DRIVE_PROTO_SCSI    = 1,
+    DRIVE_PROTO_ATA     = 2,
+    DRIVE_PROTO_SATL    = 3, /* ATA drive on SAS/USB controller */
+    DRIVE_PROTO_NVME    = 4,
+    DRIVE_PROTO_ATAPI   = 5, /* CD, DVD */
+    DRIVE_PROTO_MMCSD   = 6  /* MMC, SD, SDIO cards */
 };
 
 enum drive_smart_status {
@@ -84,17 +83,20 @@ typedef struct {
     char *driver;    /* Controller */
     char *path;
     char *phys;
-    char *type;
+    char *proto;
+    char *xport;
     char *size;
     char *temp;
     char *smart;
     char *tests;
     char *hours;
     char *used;
+    char *made;
 
     /* Binary raw data */
     struct {
-	enum drive_type type;
+	enum drive_protocol proto;
+	cam_xport xport;
 	enum drive_smart_status smart_status;
 	struct {
 	    enum drive_selftest_status status;
@@ -107,6 +109,12 @@ typedef struct {
 	uint64_t power_on_hours;
 	uint16_t endurance_used;
 	uint16_t temperature;
+        struct {
+	    struct {
+		uint64_t specified;
+		uint64_t accumulated;
+	    } start_stop, load_unload;
+	} cycles;
     } raw;
 } DRIVE;
 
@@ -121,17 +129,29 @@ extern int ds;
 extern void
 drive_init(DRIVE *dp);
 
-int
+extern int
 drive_sort(const void *a,
 	   const void *b);
 
 extern const char *
-drive_type2str(enum drive_type type);
+drive_cam_devtype2str(uint8_t devtype);
+
+extern const char *
+drive_proto2str(enum drive_protocol proto);
+
+extern const char *
+drive_cam_proto2str(cam_proto proto);
+
+extern const char *
+drive_cam_xport2str(cam_xport xport);
 
 extern const char *
 drive_smart_status2str(enum drive_smart_status status);
 
 extern const char *
 drive_selftest_status2str(enum drive_selftest_status status);
+
+extern int
+drive_classify(DRIVE *dp);
 
 #endif

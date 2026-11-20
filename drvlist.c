@@ -57,6 +57,7 @@
 #include "scsi.h"
 #include "ata.h"
 #include "nvme.h"
+#include "satl.h"
 
 #include "utils.h"
 #include "drive.h"
@@ -70,10 +71,12 @@ int f_temp = 0;
 int f_smart = 0;
 int f_tests = 0;
 int f_hours = 0;
-int f_type = 1;
+int f_proto = 1;
+int f_xport = 1;
 int f_driver = 0;
 int f_path = 0;
 int f_phys = 0;
+int f_made = 0;
 int f_endurance = 0;
 int f_multipath = 0;
 int f_maxwidth = 22;
@@ -83,47 +86,6 @@ char *f_sort = NULL;
 
 
 
-
-enum drive_type
-get_drive_type(struct cam_device *dev) {
-    union ccb *ccb;
-    cam_proto protocol;
-    
-    
-    ccb = cam_getccb(dev);
-    ccb->ccb_h.func_code = XPT_GDEV_TYPE;
-
-    if (cam_send_ccb(dev, ccb) < 0) {
-	cam_freeccb(ccb);
-	return DRIVE_TYPE_UNKNOWN;
-    }
-
-    if ((ccb->ccb_h.status & CAM_STATUS_MASK) != CAM_REQ_CMP) {
-	cam_freeccb(ccb);
-	errno = EIO;
-	return DRIVE_TYPE_UNKNOWN;
-    }
-
-    protocol = ccb->cgd.protocol;
-    cam_freeccb(ccb);
-    
-    switch (protocol) {
-    case PROTO_SCSI:
-	if (scsi_drive_is_satl(dev))
-	    return DRIVE_TYPE_SATL;
-	return DRIVE_TYPE_SCSI;
-    case PROTO_ATA:
-	return DRIVE_TYPE_ATA;
-    case PROTO_ATAPI:
-	return DRIVE_TYPE_ATAPI;
-    case PROTO_MMCSD:
-	return DRIVE_TYPE_MMCSD;
-    case PROTO_NVME:
-	return DRIVE_TYPE_NVME;
-    default:
-	return DRIVE_TYPE_UNKNOWN;
-    }
-}
 
 
 int
@@ -136,17 +98,19 @@ get_health_status(DRIVE *dp) {
 	return -1;
     }
 
-    switch (dp->raw.type) {
-    case DRIVE_TYPE_SCSI:
-	rc = scsi_health_status(dp);
+    switch (dp->raw.proto) {
+    case DRIVE_PROTO_SCSI:
+	rc = drive_scsi_health_status(dp);
 	break;
-    case DRIVE_TYPE_SATL:
-	rc = scsi_health_status(dp);
+    case DRIVE_PROTO_SATL:
+	rc = satl_health_status(dp);
+	if (!rc)
+	    rc = drive_scsi_health_status(dp);
 	break;
-    case DRIVE_TYPE_ATA:
+    case DRIVE_PROTO_ATA:
 	rc = ata_health_status(dp);
 	break;
-    case DRIVE_TYPE_NVME:
+    case DRIVE_PROTO_NVME:
 	rc = nvme_health_status(dp);
 	break;
     default:
@@ -159,6 +123,20 @@ get_health_status(DRIVE *dp) {
 
 
 
+static void
+spin(void) {
+    static char dials[] = "|/-\\";
+    static int pos = 0;
+
+    if (!isatty(fileno(stderr)))
+	return;
+    
+    putc(dials[pos], stderr);
+    putc('\b', stderr);
+    fflush(stderr);
+    pos = (pos+1)%4;
+}
+    
 
 int
 do_device(char *dname) {
@@ -177,6 +155,8 @@ do_device(char *dname) {
 
     if (f_debug)
 	fprintf(stderr, "[%s]\n", dname);
+
+    spin();
     
     /* Increase size of drive table */
     if (dc >= ds) {
@@ -209,8 +189,11 @@ do_device(char *dname) {
 
     /* Get drive size */
     if (ioctl(fd, DIOCGMEDIASIZE, &msize) < 0) {
+#if 0
+	/* Ignore errors */
 	fprintf(stderr, "%s: Error: %s: ioctl(DIOCGMEDIASIZE): %s\n",
 		argv0, path, strerror(errno));
+#endif
     }
 
     
@@ -234,11 +217,15 @@ do_device(char *dname) {
 	else
 	    sprintf(drvbuf, "%s%u",
 		    cam->sim_name, cam->sim_unit_number);
-    
+
+#if 0
+	cam_path_string(cam, pnbuf, sizeof(pnbuf));
+#else
 	sprintf(pnbuf, "scbus %2u target %3u lun %2jx",
 		cam->path_id,
 		cam->target_id,
 		cam->target_lun);
+#endif
 	
 	/* Get device serial number */
 	ident = cam->serial_num_len > 0 ? strdupget((char *) &cam->serial_num[0], cam->serial_num_len) : NULL;
@@ -283,20 +270,20 @@ do_device(char *dname) {
 		dp->size = size2str(msize);
 	    dp->driver = strdup(drvbuf);
 
-	    dp->raw.type = get_drive_type(cam);
+	    drive_classify(dp);
 
 	    /* Just in case get_drive_type fails */
-	    if (dp->raw.type == DRIVE_TYPE_UNKNOWN) {
+	    if (dp->raw.proto == DRIVE_PROTO_UNKNOWN) {
 		if (strcmp(cam->given_dev_name, "nda") == 0)
-		    dp->raw.type = DRIVE_TYPE_NVME;
+		    dp->raw.proto = DRIVE_PROTO_NVME;
 		else if (strcmp(cam->given_dev_name, "ada") == 0)
-		    dp->raw.type = DRIVE_TYPE_ATA;
+		    dp->raw.proto = DRIVE_PROTO_ATA;
 		else if (strcmp(cam->given_dev_name, "da") == 0) {
-		    dp->raw.type = DRIVE_TYPE_SCSI;
+		    dp->raw.proto = DRIVE_PROTO_SCSI;
 		}
 	    }
 		    
-	    if (dp->raw.type == DRIVE_TYPE_NVME) {
+	    if (dp->raw.proto == DRIVE_PROTO_NVME) {
 		/* NVME device */
 		char npath[1024];
 
@@ -333,27 +320,38 @@ do_device(char *dname) {
 		physbuf[0] = '\0';
 		if (f_phys) {
 		    if (ioctl(fd, DIOCGPHYSPATH, physbuf) < 0) {
+#if 0
 			fprintf(stderr, "%s: Error: %s (%d): ioctl(DIOCGPHYSPATH): %s\n",
 				argv0, path, fd, strerror(errno));
+#endif
 		    }
-		    dp->phys = strdup(physbuf);
+		    if (physbuf[0]) 
+			dp->phys = strdup(physbuf);
 		}
 
-		if (dp->raw.type == DRIVE_TYPE_ATA) {
-		    /* ATA device */
-		    ata_identify(cam, &dp->vendor, &dp->product, &dp->revision, &have_selftest);
-		    dp->flags.have_selftest = have_selftest;
-		}  
-		
-		/* Probably only da (SAS/SCSI) drives */
-		if (!dp->vendor && cam->inq_data.vendor[0])
-		    dp->vendor = strdupget(cam->inq_data.vendor, sizeof(cam->inq_data.vendor));
-		
-		if (!dp->product && cam->inq_data.product[0])
-		    dp->product = strdupget(cam->inq_data.product, sizeof(cam->inq_data.product));
-		
-		if (!dp->revision && cam->inq_data.revision[0])
-		    dp->revision = strdupget(cam->inq_data.revision, sizeof(cam->inq_data.revision));
+		if (!dp->vendor || !dp->product || !dp->revision) {
+		    if (dp->raw.proto == DRIVE_PROTO_ATA) {
+			/* ATA device */
+			ata_identify(dp, &dp->vendor, &dp->product, &dp->revision, &have_selftest);
+			dp->flags.have_selftest = have_selftest;
+		    }
+		}
+
+		switch (dp->raw.proto) {
+		case DRIVE_PROTO_MMCSD:
+		    fprintf(stderr, "[mmcsd]\n");
+		    break;
+		default:
+		    /* Probably only da (SAS/SCSI) drives */
+		    if (!dp->vendor && cam->inq_data.vendor[0])
+			dp->vendor = strdupget(cam->inq_data.vendor, sizeof(cam->inq_data.vendor));
+		    
+		    if (!dp->product && cam->inq_data.product[0])
+			dp->product = strdupget(cam->inq_data.product, sizeof(cam->inq_data.product));
+		    
+		    if (!dp->revision && cam->inq_data.revision[0])
+			dp->revision = strdupget(cam->inq_data.revision, sizeof(cam->inq_data.revision));
+		}
 
 		
 		if (dp->vendor && dp->product) {
@@ -381,7 +379,8 @@ do_device(char *dname) {
 		
 	    }
 
-	    dp->type = strdup(drive_type2str(dv[i].raw.type));
+	    dp->proto = strdup(drive_proto2str(dv[i].raw.proto));
+	    dp->xport = strdup(drive_cam_xport2str(dv[i].raw.xport));
 	    
 	    rc = get_health_status(dp);
 	    if (rc > 0) {
@@ -400,7 +399,7 @@ do_device(char *dname) {
 		if (dp->raw.endurance_used != DRIVE_NO_ENDURANCE_USED) {
 		    sprintf(buf, "%d%%", dp->raw.endurance_used);
 		    dp->used = strdup(buf);
-		}
+		} 
 		
 		dp->smart = strdup(drive_smart_status2str(dp->raw.smart_status));
 
@@ -460,8 +459,10 @@ do_device(char *dname) {
 	physbuf[0] = '\0';
 	if (f_phys) {
 	    if (ioctl(fd, DIOCGPHYSPATH, physbuf) < 0) {
+#if 0
 		fprintf(stderr, "%s: Error: %s (%d): ioctl(DIOCGPHYSPATH): %s\n",
 			argv0, path, fd, strerror(errno));
+#endif
 	    }
 	}
 	
@@ -520,8 +521,10 @@ main(int argc,
     int smartlen = 5;
     int testslen = 5;
     int hourslen = 5;
+    int protolen = 5;
+    int xportlen = 5;
     int usedlen = 4;
-    int typelen = 4;
+    int madelen = 4;
 
 
     argv0 = argv[0];
@@ -647,6 +650,9 @@ main(int argc,
 			    f_path++;
 			    if (f_verbose > 6) {
 				f_phys++;
+				if (f_verbose > 7) {
+				    f_made++;
+				}
 			    }
 			}
 		    }
@@ -714,12 +720,14 @@ main(int argc,
 	strntrim(dv[i].path, &pathlen, f_maxwidth);
 	strntrim(dv[i].phys, &physlen, f_maxwidth);
 	strntrim(dv[i].size, &sizelen, f_maxwidth);
-	strntrim(dv[i].type, &typelen, f_maxwidth);
+	strntrim(dv[i].proto, &protolen, f_maxwidth);
+	strntrim(dv[i].xport, &xportlen, f_maxwidth);
 	strntrim(dv[i].temp, &templen, f_maxwidth);
 	strntrim(dv[i].smart, &smartlen, f_maxwidth);
 	strntrim(dv[i].tests, &testslen, f_maxwidth);
 	strntrim(dv[i].hours, &hourslen, f_maxwidth);
 	strntrim(dv[i].used, &usedlen, f_maxwidth);
+	strntrim(dv[i].made, &madelen, f_maxwidth);
     }
 
     numlen = (int) (log10(dc)+1);
@@ -748,8 +756,14 @@ main(int argc,
 	if (f_endurance)
 	    p_field("USED", usedlen, f_sep);
 
-	if (f_type)
-	    p_field("TYPE", -typelen, f_sep);
+	if (f_proto)
+	    p_field("PROTO", -protolen, f_sep);
+	
+	if (f_xport)
+	    p_field("XPORT", -xportlen, f_sep);
+	
+	if (f_made)
+	    p_field("MADE", -madelen, f_sep);
 	
 	p_field("NAMES", -nameslen, f_sep);
 	
@@ -788,8 +802,14 @@ main(int argc,
 	if (f_endurance)
 	    p_field(dv[i].used, usedlen, f_sep);
 
-	if (f_type)
-	    p_field(dv[i].type, -typelen, f_sep);
+	if (f_proto)
+	    p_field(dv[i].proto, -protolen, f_sep);
+	
+	if (f_xport)
+	    p_field(dv[i].xport, -xportlen, f_sep);
+		
+	if (f_made)
+	    p_field(dv[i].made, -madelen, f_sep);
 		
 	p_field(dv[i].names, -nameslen, f_sep);
 	       

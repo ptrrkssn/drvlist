@@ -159,10 +159,11 @@ ata_smart_attribute_temperature(const struct ata_smart_attribute *attr,
  * Execute a ATA SMART command
  */
 int
-ata_cmd_smart(struct cam_device *dev,
+ata_cmd_smart(DRIVE *dp,
 	      uint8_t code,
 	      uint8_t *buf,
 	      size_t bufsize) {
+    struct cam_device *dev = dp->cam;
     union ccb *ccb;
     uint32_t cam_status;
     int saved_errno;
@@ -245,8 +246,7 @@ ata_cmd_smart(struct cam_device *dev,
 
 
 int
-ata_drive_temperature(struct cam_device *dev,
-		      DRIVE *dp) {
+ata_drive_temperature(DRIVE *dp) {
     uint8_t data[SMART_DATA_SIZE];
     ssize_t len;
     uint16_t fallback_temperature;
@@ -254,7 +254,7 @@ ata_drive_temperature(struct cam_device *dev,
     int have_fallback;
 
 
-    len = ata_cmd_smart(dev, ATA_SMART_READ_DATA, data, sizeof(data));
+    len = ata_cmd_smart(dp, ATA_SMART_READ_DATA, data, sizeof(data));
     if (len < 0)
 	return len;
     if (len != SMART_DATA_SIZE) {
@@ -364,17 +364,21 @@ ata_do_cmd(struct cam_device *device, union ccb *ccb, int retries,
 }
 
 int
-ata_identify(struct cam_device *cdb,
+ata_identify(DRIVE *dp,
 	     char **vendor,
 	     char **model,
 	     char **revision,
 	     int *have_selftest) {
+    struct cam_device *cdb = dp->cam;
     union ccb *ccb;
     struct ata_params apb;
     uint8_t *bp;
     u_int i, error;
     uint8_t command, retry_command;
     
+
+    if (f_debug)
+	fprintf(stderr, "  [ata_identify]\n");
     
     if ((ccb = cam_getccb(cdb)) == NULL) {
 	return -1;
@@ -447,8 +451,8 @@ ata_identify(struct cam_device *cdb,
  *     LBA mid = 0xf4, LBA high = 0x2c: threshold exceeded
  */
 int
-ata_smart_status(struct cam_device *dev,
-		 DRIVE *dp) {
+ata_smart_status(DRIVE *dp) {
+    struct cam_device *dev = dp->cam;
     union ccb *ccb;
     uint32_t cam_status;
     uint8_t lba_mid;
@@ -592,8 +596,8 @@ classify_ata_selftest(uint8_t status)
  * Read the most recent ATA SMART self-test result from an ada device.
  */
 int
-ata_selftest_status(struct cam_device *dev,
-		    DRIVE *dp) {
+ata_selftest_status(DRIVE *dp) {
+    struct cam_device *dev = dp->cam;
     union ccb *ccb;
     uint8_t buffer[ATA_SMART_LOG_SIZE];
     uint8_t index;
@@ -734,24 +738,24 @@ ata_selftest_status(struct cam_device *dev,
 
 
 int
-ata_health_status( DRIVE *dp) {
+ata_health_status(DRIVE *dp) {
     int rc1 = 0, rc2 = 0, rc3 = 0;
 
 
     if (f_debug)
 	fprintf(stderr, "  [temp]\n");
-    rc1 = ata_drive_temperature(dp->cam, dp);
+    rc1 = ata_drive_temperature(dp);
     if (rc1 < 0)
 	return rc1;
     
     if (f_debug)
 	fprintf(stderr, "  [smart]\n");
-    rc2 = ata_smart_status(dp->cam, dp);
+    rc2 = ata_smart_status(dp);
 
     if (dp->flags.have_selftest) {
 	if (f_debug)
 	    fprintf(stderr, "  [selftest]\n");
-	rc3 = ata_selftest_status(dp->cam, dp);
+	rc3 = ata_selftest_status(dp);
     }
 
     if (rc1 > 0 || rc2 > 0 || rc3 > 0)

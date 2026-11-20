@@ -42,21 +42,18 @@
 
 
 extern int
-scsi_drive_temperature(struct cam_device *dev,
-		       DRIVE *dp);
+drive_scsi_temperature(DRIVE *dp);
 
 extern int
-scsi_ie_status(struct cam_device *dev,
-		       DRIVE *dp);
+drive_scsi_ie_status(DRIVE *dp);
 
 extern int
-scsi_selftest_results_status(struct cam_device *dev,
-		       DRIVE *dp);
+drive_scsi_selftest_results_status(DRIVE *dp);
 
 extern int
-scsi_health_status(DRIVE *dp);
+drive_scsi_health_status(DRIVE *dp);
 
 extern int
-scsi_drive_is_satl(struct cam_device *dev);
+drive_scsi_is_satl(DRIVE *dp);
 
 #endif

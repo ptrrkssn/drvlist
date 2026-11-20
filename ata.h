@@ -34,12 +34,10 @@
 #ifndef DRVLIST_ATA_H
 #define DRVLIST_ATA_H 1
 
-#include <cam/cam.h>
-
 #include "drive.h"
 
 extern int
-ata_identify(struct cam_device *cdb,
+ata_identify(DRIVE *dp,
 	     char **vendor,
 	     char **model,
 	     char **revision,
@@ -49,17 +47,14 @@ ata_identify(struct cam_device *cdb,
 
 
 extern int
-ata_drive_temperature(struct cam_device *dev,
-		      DRIVE *dp);
+ata_drive_temperature(DRIVE *dp);
 
 extern int
-ata_smart_status(struct cam_device *dev,
-		 DRIVE *dp);
+ata_smart_status(DRIVE *dp);
 
 
 extern int
-ata_tests_status(struct cam_device *dev,
-		 DRIVE *dp);
+ata_tests_status(DRIVE *dp);
 
 
 extern int
