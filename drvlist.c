@@ -34,6 +34,7 @@
  */
 
 #include <stdio.h>
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
@@ -73,11 +74,11 @@ int f_tests = 0;
 int f_hours = 0;
 int f_proto = 1;
 int f_xport = 1;
-int f_driver = 0;
+int f_ctrl = 0;
 int f_path = 0;
 int f_phys = 0;
 int f_made = 0;
-int f_endurance = 0;
+int f_wear = 0;
 int f_multipath = 0;
 int f_maxwidth = 22;
 
@@ -136,7 +137,50 @@ spin(void) {
     fflush(stderr);
     pos = (pos+1)%4;
 }
-    
+
+
+struct drive_field {
+    char *name;
+    int width;
+    off_t offset;
+    bool disabled;
+} fields[] = {
+#define FIELD_VENDOR 0
+    { "VENDOR",   -6, offsetof(DRIVE, vendor) },
+#define FIELD_PRODUCT 1
+    { "PRODUCT",  -7, offsetof(DRIVE, product) },
+#define FIELD_VERSION 2
+    { "VERSION",  -7, offsetof(DRIVE, version) },    
+#define FIELD_IDENT 3
+    { "IDENT",    -5, offsetof(DRIVE, ident) },    
+#define FIELD_SIZE 4
+    { "SIZE",      4, offsetof(DRIVE, size) },    
+#define FIELD_TEMP 5
+    { "TEMP",      4, offsetof(DRIVE, temp) },    
+#define FIELD_SMART 6
+    { "SMART",    -5, offsetof(DRIVE, smart) },    
+#define FIELD_TESTS 7
+    { "TESTS",    -5, offsetof(DRIVE, tests) },    
+#define FIELD_HOURS 8
+    { "HOURS",     5, offsetof(DRIVE, hours) },    
+#define FIELD_WEAR 9
+    { "WEAR",      4, offsetof(DRIVE, wear) },    
+#define FIELD_PROTO 10
+    { "PROTO",    -5, offsetof(DRIVE, proto) },    
+#define FIELD_XPORT 11
+    { "XPORT",    -5, offsetof(DRIVE, xport) },    
+#define FIELD_MADE 12
+    { "MADE",     -4, offsetof(DRIVE, made) },    
+#define FIELD_NAMES 13
+    { "NAMES",    -5, offsetof(DRIVE, names) },    
+#define FIELD_CTRL 14
+    { "CTRL",     -4, offsetof(DRIVE, ctrl) },    
+#define FIELD_PATH 15
+    { "PATH",     -4, offsetof(DRIVE, path) },    
+#define FIELD_PHYS 16
+    { "PHYS",     -4, offsetof(DRIVE, phys) },    
+    { NULL, 0, 0 },
+};
 
 int
 do_device(char *dname) {
@@ -252,7 +296,7 @@ do_device(char *dname) {
 	    /* Add alternate names */
 	    strdupcat(&dp->names, dname);
 	    strdupcat(&dp->path, pnbuf);
-	    strdupcat(&dp->driver, drvbuf);
+	    strdupcat(&dp->ctrl, drvbuf);
 
 	    cam_close_device(cam);
 	    close(fd);
@@ -268,7 +312,7 @@ do_device(char *dname) {
 	    dp->path = strdup(pnbuf);
 	    if (msize > 0)
 		dp->size = size2str(msize);
-	    dp->driver = strdup(drvbuf);
+	    dp->ctrl = strdup(drvbuf);
 
 	    drive_classify(dp);
 
@@ -300,7 +344,7 @@ do_device(char *dname) {
 			close(fd);
 			return -1;
 		    }
-		    nvme_identify_fd(nfd, &dp->vendor, &dp->product, &dp->revision, NULL, &dp->phys, &have_selftest);
+		    nvme_identify_fd(nfd, &dp->vendor, &dp->product, &dp->version, NULL, &dp->phys, &have_selftest);
 		    dp->flags.have_selftest = have_selftest;
 		    close(nfd);
 		    
@@ -329,10 +373,10 @@ do_device(char *dname) {
 			dp->phys = strdup(physbuf);
 		}
 
-		if (!dp->vendor || !dp->product || !dp->revision) {
+		if (!dp->vendor || !dp->product || !dp->version) {
 		    if (dp->raw.proto == DRIVE_PROTO_ATA) {
 			/* ATA device */
-			ata_identify(dp, &dp->vendor, &dp->product, &dp->revision, &have_selftest);
+			ata_identify(dp, &dp->vendor, &dp->product, &dp->version, &have_selftest);
 			dp->flags.have_selftest = have_selftest;
 		    }
 		}
@@ -349,8 +393,8 @@ do_device(char *dname) {
 		    if (!dp->product && cam->inq_data.product[0])
 			dp->product = strdupget(cam->inq_data.product, sizeof(cam->inq_data.product));
 		    
-		    if (!dp->revision && cam->inq_data.revision[0])
-			dp->revision = strdupget(cam->inq_data.revision, sizeof(cam->inq_data.revision));
+		    if (!dp->version && cam->inq_data.revision[0])
+			dp->version = strdupget(cam->inq_data.revision, sizeof(cam->inq_data.revision));
 		}
 
 		
@@ -398,7 +442,7 @@ do_device(char *dname) {
 
 		if (dp->raw.endurance_used != DRIVE_NO_ENDURANCE_USED) {
 		    sprintf(buf, "%d%%", dp->raw.endurance_used);
-		    dp->used = strdup(buf);
+		    dp->wear = strdup(buf);
 		} 
 		
 		dp->smart = strdup(drive_smart_status2str(dp->raw.smart_status));
@@ -487,7 +531,7 @@ do_device(char *dname) {
 
 int
 p_field(const char *value,
-	int  width,
+	int width,
 	const char *separator) {
     if (!value)
 	value = "-";
@@ -507,25 +551,8 @@ main(int argc,
     size_t bsize = 0;
     int i, j;
     int rc = 0;
-    int identlen = 7;
-    int vendorlen = 6;
-    int productlen = 7;
-    int revisionlen = 4;
-    int nameslen = 5;
-    int drvlen = 3;
-    int pathlen = 4;
-    int physlen = 4;
     int numlen = 1;
-    int sizelen = 4;
-    int templen = 4;
-    int smartlen = 5;
-    int testslen = 5;
-    int hourslen = 5;
-    int protolen = 5;
-    int xportlen = 5;
-    int usedlen = 4;
-    int madelen = 4;
-
+    
 
     argv0 = argv[0];
 
@@ -597,10 +624,6 @@ main(int argc,
 		    f_maxwidth = 0;
 		break;
 		
-	    case 'w':
-		f_maxwidth = 0;
-		break;
-		
 	    case 'm':
 		f_multipath++;
 		break;
@@ -619,12 +642,12 @@ main(int argc,
 		f_tests++;
 		break;
 		
-	    case 'd':
-		f_driver++;
+	    case 'c':
+		f_ctrl++;
 		break;
 		
-	    case 'e':
-		f_endurance++;
+	    case 'w':
+		f_wear++;
 		break;
 		
 	    default:
@@ -643,9 +666,9 @@ main(int argc,
 	    if (f_verbose > 2) {
 		f_hours++;
 		if (f_verbose > 3) {
-		    f_endurance++;
+		    f_wear++;
 		    if (f_verbose > 4) {
-			f_driver++;
+			f_ctrl++;
 			if (f_verbose > 5) {
 			    f_path++;
 			    if (f_verbose > 6) {
@@ -709,25 +732,55 @@ main(int argc,
     
     if (!dc)
 	return 0;
+
+    if (!f_temp)
+	fields[FIELD_TEMP].disabled = 1;
+
+    if (f_smart)
+	fields[FIELD_SMART].disabled = 1;
+
+    if (f_tests)
+	fields[FIELD_TESTS].disabled = 1;
+
+    if (f_hours)
+	fields[FIELD_HOURS].disabled = 1;
+
+    if (f_wear)
+	fields[FIELD_WEAR].disabled = 1;
+
+    if (f_proto)
+	fields[FIELD_PROTO].disabled = 1;
+
+    if (f_xport)
+	fields[FIELD_XPORT].disabled = 1;
+
+    if (f_made)
+	fields[FIELD_MADE].disabled = 1;
+
+    if (f_ctrl)
+	fields[FIELD_CTRL].disabled = 1;
+    
+    if (f_path)
+	fields[FIELD_PATH].disabled = 1;
+	
+    if (f_phys)
+	fields[FIELD_PHYS].disabled = 1;
     
     for (i = 0; i < dc; i++) {
-	strntrim(dv[i].ident, &identlen, f_maxwidth);
-	strntrim(dv[i].vendor, &vendorlen, f_maxwidth);
-	strntrim(dv[i].product, &productlen, f_maxwidth);
-	strntrim(dv[i].revision, &revisionlen, f_maxwidth);
-	strntrim(dv[i].names, &nameslen, f_maxwidth);
-	strntrim(dv[i].driver, &drvlen, f_maxwidth);
-	strntrim(dv[i].path, &pathlen, f_maxwidth);
-	strntrim(dv[i].phys, &physlen, f_maxwidth);
-	strntrim(dv[i].size, &sizelen, f_maxwidth);
-	strntrim(dv[i].proto, &protolen, f_maxwidth);
-	strntrim(dv[i].xport, &xportlen, f_maxwidth);
-	strntrim(dv[i].temp, &templen, f_maxwidth);
-	strntrim(dv[i].smart, &smartlen, f_maxwidth);
-	strntrim(dv[i].tests, &testslen, f_maxwidth);
-	strntrim(dv[i].hours, &hourslen, f_maxwidth);
-	strntrim(dv[i].used, &usedlen, f_maxwidth);
-	strntrim(dv[i].made, &madelen, f_maxwidth);
+	for (j = 0; fields[j].name; j++) {
+	    struct drive_field *dfp = &fields[j];
+	    int w;
+	    char *cp;
+
+	    if (dfp->disabled)
+		continue;
+	    
+	    cp = * (char **) ((uint8_t *) &dv[i] + dfp->offset);
+
+	    w = (dfp->width >= 0 ? dfp->width : -dfp->width);
+	    strntrim(cp, &w, f_maxwidth);
+	    dfp->width = (dfp->width >= 0 ? w : -w);
+	}
     }
 
     numlen = (int) (log10(dc)+1);
@@ -735,93 +788,27 @@ main(int argc,
 
     if (isatty(1)) {
 	p_field("#", numlen, "\033[1;4m");
-	p_field("VENDOR", -vendorlen, f_sep);
-	p_field("PRODUCT", -productlen, f_sep);
-	p_field("REV.", -revisionlen, f_sep);
-	p_field("IDENT", -identlen, f_sep);
-	p_field("SIZE", sizelen, f_sep);
-	
-	if (f_temp)
-	    p_field("TEMP", templen, f_sep);
-
-	if (f_smart)
-	    p_field("SMART", -smartlen, f_sep);
-
-	if (f_tests)
-	    p_field("TESTS", -testslen, f_sep);
-
-	if (f_hours)
-	    p_field("HOURS", hourslen, f_sep);
-
-	if (f_endurance)
-	    p_field("USED", usedlen, f_sep);
-
-	if (f_proto)
-	    p_field("PROTO", -protolen, f_sep);
-	
-	if (f_xport)
-	    p_field("XPORT", -xportlen, f_sep);
-	
-	if (f_made)
-	    p_field("MADE", -madelen, f_sep);
-	
-	p_field("NAMES", -nameslen, f_sep);
-	
-	if (f_driver)
-	    p_field("DRV.", -drvlen, f_sep);
-
-	if (f_path)
-	    p_field("PATH", -pathlen, f_sep);
-	
-	if (f_phys)
-	    p_field("PHYS", -physlen, f_sep);
-
+	for (j = 0; fields[j].name; j++) {
+	    struct drive_field *dfp = &fields[j];
+	    if (dfp->disabled)
+		continue;
+	    p_field(dfp->name, dfp->width, f_sep);
+	}
 	puts("\033[0m");
     }
 
     for (i = 0; i < dc; i++) {
 	printf("%*u", numlen, i+1);
-	p_field(dv[i].vendor, -vendorlen, f_sep);
-	p_field(dv[i].product, -productlen, f_sep);
-	p_field(dv[i].revision, -revisionlen, f_sep);
-	p_field(dv[i].ident, -identlen, f_sep);
-	p_field(dv[i].size, sizelen, f_sep);
-
-	if (f_temp)
-	    p_field(dv[i].temp, templen, f_sep);
-
-	if (f_smart)
-	    p_field(dv[i].smart, -smartlen, f_sep);
-		   
-	if (f_tests)
-	    p_field(dv[i].tests, -testslen, f_sep);
-
-	if (f_hours)
-	    p_field(dv[i].hours, hourslen, f_sep);
-
-	if (f_endurance)
-	    p_field(dv[i].used, usedlen, f_sep);
-
-	if (f_proto)
-	    p_field(dv[i].proto, -protolen, f_sep);
-	
-	if (f_xport)
-	    p_field(dv[i].xport, -xportlen, f_sep);
-		
-	if (f_made)
-	    p_field(dv[i].made, -madelen, f_sep);
-		
-	p_field(dv[i].names, -nameslen, f_sep);
-	       
-	if (f_driver)
-	    p_field(dv[i].driver, -drvlen, f_sep);
-
-	if (f_path)
-	    p_field(dv[i].path, -pathlen, f_sep);
-	
-	if (f_phys)
-	    p_field(dv[i].phys, -physlen, f_sep);
-
+	for (j = 0; fields[j].name; j++) {
+	    struct drive_field *dfp = &fields[j];
+	    char *cp;
+	    
+	    if (dfp->disabled)
+		continue;
+	    
+	    cp = * (char **) ((uint8_t *) &dv[i] + dfp->offset);
+	    p_field(cp, dfp->width, f_sep);
+	}
 	putchar('\n');
     }
 

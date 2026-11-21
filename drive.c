@@ -209,7 +209,7 @@ drive_sort_devpath(const DRIVE *da,
 		   const DRIVE *db) {
     int d;
 
-    d = strcmp(da->driver, db->driver);
+    d = strcmp(da->ctrl, db->ctrl);
     if (d)
 	return d;
     

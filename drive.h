@@ -79,8 +79,8 @@ typedef struct {
     char *names;     /* da0, ada0, nda0 */
     char *vendor;    /* INTEL, SEAGATE, WDC, HGST */
     char *product;   
-    char *revision;  /* Firmware revision */
-    char *driver;    /* Controller */
+    char *version;   /* Firmware version */
+    char *ctrl;      /* Controller */
     char *path;
     char *phys;
     char *proto;
@@ -90,7 +90,7 @@ typedef struct {
     char *smart;
     char *tests;
     char *hours;
-    char *used;
+    char *wear;
     char *made;
 
     /* Binary raw data */

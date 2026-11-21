@@ -436,9 +436,9 @@ out:
 	if (dp->ident)
 	    free(dp->ident);
 	dp->ident = strdup(serial);
-	if (dp->revision)
-	    free(dp->revision);
-	dp->revision = strdup(firmware);
+	if (dp->version)
+	    free(dp->version);
+	dp->version = strdup(firmware);
 	
 	if (f_debug)
 	    print_identify(identify, cdb_size);
