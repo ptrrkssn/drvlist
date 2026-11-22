@@ -3,7 +3,7 @@
 OBJS=drvlist.o drive.o scsi.o ata.o nvme.o satl.o utils.o
 LIBS=-lcam -lm
 
-CFLAGS=-O -g -Wall
+CFLAGS=-O3 -g -Wall
 
 all: drvlist
 

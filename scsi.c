@@ -839,14 +839,10 @@ classify_selftest_result(uint8_t result) {
     case 0x5:
     case 0x6:
     case 0x7:
-    case 0x8:
         return (DRIVE_SELFTEST_FAILED);
 
-    case 0x9:
-        return (DRIVE_SELFTEST_RUNNING);
-
     case 0xf:
-        return (DRIVE_SELFTEST_NONE);
+        return (DRIVE_SELFTEST_RUNNING);
 
     default:
         return (DRIVE_SELFTEST_UNKNOWN);
@@ -864,6 +860,7 @@ selftest_results_handler(uint16_t code,
     uint8_t selftest_code;
     uint8_t selftest_result;
     uint16_t poh;
+    static enum drive_selftest_status status;
     
     
     /* Self-test result descriptors contain 16 data bytes */
@@ -890,18 +887,20 @@ selftest_results_handler(uint16_t code,
 		selftest_code,
 		selftest_result,
 		poh);
-    if (poh == 0x0000 || poh == 0xffff)
+    if (poh == 0xffff)
 	return 0;
+
+    status = classify_selftest_result(selftest_result);
+    /* Parameter code 1 is normally the newest entry */
+    if (code == 0x0001) {
+	dp->raw.selftest.status = status;
+    }
     
     if (dp->raw.power_on_hours == DRIVE_NO_POWER_ON_HOURS || poh > dp->raw.power_on_hours)
 	dp->raw.power_on_hours = poh;
     
-    /* Parameter code 1 is normally the newest entry */
-    if (code == 0x0001)
-	dp->raw.selftest.status = classify_selftest_result(selftest_result);
-    
     dp->raw.selftest.tests++;
-    switch (dp->raw.selftest.status) {
+    switch (status) {
     case DRIVE_SELFTEST_PASSED:
 	dp->raw.selftest.passed++;
 	break;

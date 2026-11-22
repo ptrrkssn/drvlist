@@ -190,7 +190,7 @@ strdupget(const char *s,
 	return NULL;
     
     /* Strip trailing spaces */
-    for (i = strlen(r)-1; i >= 0 && isspace(r[i]); --i)
+    for (i = strlen(r)-1; i >= 0 && (isspace(r[i]) || !isprint(r[i]) || r[i] == '_'); --i)
 	r[i] = '\0';
 
     return r;

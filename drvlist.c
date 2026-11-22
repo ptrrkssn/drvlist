@@ -42,6 +42,7 @@
 #include <fcntl.h>
 #include <math.h>
 #include <unistd.h>
+#include <termios.h>
 #include <sys/types.h>
 #include <sys/ioctl.h>
 #include <sys/sysctl.h>
@@ -71,7 +72,12 @@ int f_debug = 0;
 int f_sort = 0;
 int f_dir  = 1;
 int f_multipath = 0;
-int f_maxwidth = 22;
+int f_colwidth = 0;
+int f_width = 0;
+
+int t_width  = 0;
+int t_height = 0;
+
 
 char *f_sep = " : ";
 
@@ -139,62 +145,87 @@ static void
 spin(void) {
     static char dials[] = "|/-\\";
     static int pos = 0;
-
+    static time_t now, last = 0;
+    
     if (!isatty(fileno(stderr)))
+	return;
+
+    time(&now);
+    if (!last)
+	last = now;
+    if (last == now)
 	return;
     
     putc(dials[pos], stderr);
     putc('\b', stderr);
     fflush(stderr);
     pos = (pos+1)%4;
+
+    last = now;
 }
 
 
-struct drive_field {
+struct drive_column {
     char *name;
     int width;
     off_t offset;
     int *flag;
-} fields[] = {
-#define FIELD_VENDOR 1
-    { "VENDOR",   -6, offsetof(DRIVE, vendor),  &f_vendor },
-#define FIELD_PRODUCT 2
-    { "PRODUCT",  -7, offsetof(DRIVE, product), &f_product },
-#define FIELD_VERSION 3
-    { "VERSION",  -7, offsetof(DRIVE, version), &f_version },    
-#define FIELD_IDENT 4
-    { "IDENT",    -5, offsetof(DRIVE, ident),   &f_ident },    
-#define FIELD_SIZE 5
-    { "SIZE",      4, offsetof(DRIVE, size),    &f_size },    
-#define FIELD_TEMP 6
-    { "TEMP",      4, offsetof(DRIVE, temp),    &f_temp },    
-#define FIELD_SMART 7
-    { "SMART",    -5, offsetof(DRIVE, smart),   &f_smart },    
-#define FIELD_TESTS 8
-    { "TESTS",    -5, offsetof(DRIVE, tests),   &f_tests },    
-#define FIELD_HOURS 9
-    { "HOURS",     5, offsetof(DRIVE, hours),   &f_hours },    
-#define FIELD_WEAR 10
-    { "WEAR",      4, offsetof(DRIVE, wear),    &f_wear },    
-#define FIELD_MADE 11
-    { "MADE",     -4, offsetof(DRIVE, made),    &f_made },    
-#define FIELD_PROTO 12
-    { "PROTO",    -5, offsetof(DRIVE, proto),   &f_proto },    
-#define FIELD_XPORT 13
-    { "XPORT",    -5, offsetof(DRIVE, xport),   &f_xport },    
-#define FIELD_NAME 14
+} columns[] = {
+#define C_NAME 1
     { "NAME",     -5, offsetof(DRIVE, name),    &f_name },    
-#define FIELD_CTRL 15
+#define C_VENDOR 2
+    { "VENDOR",   -6, offsetof(DRIVE, vendor),  &f_vendor },
+#define C_PRODUCT 3
+    { "PRODUCT",  -7, offsetof(DRIVE, product), &f_product },
+#define C_VERSION 4
+    { "VERSION",  -7, offsetof(DRIVE, version), &f_version },    
+#define C_IDENT 5
+    { "IDENT",    -5, offsetof(DRIVE, ident),   &f_ident },    
+#define C_SIZE 6
+    { "SIZE",      4, offsetof(DRIVE, size),    &f_size },    
+#define C_TEMP 7
+    { "TEMP",      4, offsetof(DRIVE, temp),    &f_temp },    
+#define C_SMART 8
+    { "SMART",    -5, offsetof(DRIVE, smart),   &f_smart },    
+#define C_TESTS 9
+    { "TESTS",    -5, offsetof(DRIVE, tests),   &f_tests },    
+#define C_HOURS 10
+    { "HOURS",     5, offsetof(DRIVE, hours),   &f_hours },    
+#define C_WEAR 11
+    { "WEAR",      4, offsetof(DRIVE, wear),    &f_wear },    
+#define C_MADE 12
+    { "MADE",     -4, offsetof(DRIVE, made),    &f_made },    
+#define C_PROTO 13
+    { "PROTO",    -5, offsetof(DRIVE, proto),   &f_proto },    
+#define C_XPORT 14
+    { "XPORT",    -5, offsetof(DRIVE, xport),   &f_xport },    
+#define C_CTRL 15
     { "CTRL",     -4, offsetof(DRIVE, ctrl),    &f_ctrl },    
-#define FIELD_PATH 16
+#define C_PATH 16
     { "PATH",     -4, offsetof(DRIVE, path),    &f_path },    
-#define FIELD_PHYS 17
+#define C_PHYS 17
     { "PHYS",     -4, offsetof(DRIVE, phys),    &f_phys },    
 };
 
-#define NFIELDS (sizeof(fields)/sizeof(fields[0]))
+#define NCOLUMNS (sizeof(columns)/sizeof(columns[0]))
 
 
+
+int
+terminal_size(int *x,
+	      int *y) {
+    struct winsize win = { 0, 0, 0, 0 };
+
+    if (ioctl(1, TIOCGWINSZ, &win) < 0)
+	return -1;
+
+    if (x)
+	*x = win.ws_col;
+    if (y)
+	*y = win.ws_row;
+
+    return 0;
+}
 
 
 int
@@ -270,21 +301,13 @@ do_device(char *dname) {
 		    cam->sim_unit_number);
 	}
 
-	if (f_verbose > 1)
-	    sprintf(drvbuf, "%s%u @ bus %u",
-		    cam->sim_name, cam->sim_unit_number, cam->bus_id);
-	else
-	    sprintf(drvbuf, "%s%u",
-		    cam->sim_name, cam->sim_unit_number);
+	sprintf(drvbuf, "%s%u:%u",
+		cam->sim_name, cam->sim_unit_number, cam->bus_id);
 
-#if 0
-	cam_path_string(cam, pnbuf, sizeof(pnbuf));
-#else
 	sprintf(pnbuf, "scbus %2u target %3u lun %2jx",
 		cam->path_id,
 		cam->target_id,
 		cam->target_lun);
-#endif
 	
 	/* Get device serial number */
 	ident = cam->serial_num_len > 0 ? strdupget((char *) &cam->serial_num[0], cam->serial_num_len) : NULL;
@@ -378,14 +401,17 @@ do_device(char *dname) {
 		/* Get physical path (does not work on NDA/NVME */
 		physbuf[0] = '\0';
 		if (f_phys) {
+		    
+		    memset(physbuf, 0, sizeof(physbuf));
 		    if (ioctl(fd, DIOCGPHYSPATH, physbuf) < 0) {
 #if 0
 			fprintf(stderr, "%s: Error: %s (%d): ioctl(DIOCGPHYSPATH): %s\n",
 				argv0, path, fd, strerror(errno));
 #endif
 		    }
-		    if (physbuf[0]) 
-			dp->phys = strdup(physbuf);
+		    if (physbuf[0]) {
+			dp->phys = strdupget(physbuf, sizeof(physbuf));
+		    }
 		}
 
 		if (!dp->vendor || !dp->product || !dp->version) {
@@ -545,7 +571,7 @@ do_device(char *dname) {
 }
 
 int
-p_field(const char *value,
+p_column(const char *value,
 	int width,
 	const char *separator) {
     if (!value)
@@ -559,36 +585,36 @@ p_field(const char *value,
 
 
 int
-field_name2id(const char *name) {
+column_name2id(const char *name) {
     int i;
 
-    for (i = 0; i < NFIELDS && strcasecmp(name, fields[i].name) != 0; i++)
+    for (i = 0; i < NCOLUMNS && strcasecmp(name, columns[i].name) != 0; i++)
 	;
 
-    if (i < NFIELDS)
+    if (i < NCOLUMNS)
 	return i+1;
 
     return 0;
 }
 
 const char *
-field_id2name(int id) {
-    if (id < 1 || id > NFIELDS)
+column_id2name(int id) {
+    if (id < 1 || id > NCOLUMNS)
 	return NULL;
     
-    return fields[id-1].name;
+    return columns[id-1].name;
 }
 
 
 int
-field_get_flag(int id,
+column_get_flag(int id,
 	       int *state) {
     int *ip;
     
-      if (id < 1 || id > NFIELDS)
+      if (id < 1 || id > NCOLUMNS)
 	return -1;
 
-    ip = fields[id-1].flag;
+    ip = columns[id-1].flag;
     if (state)
 	*state = *ip;
     
@@ -596,44 +622,75 @@ field_get_flag(int id,
 }
 
 int
-field_set_flag(int id,
+column_set_flag(int id,
 	      int state) {
     int *ip;
     
-    if (id < 1 || id > NFIELDS)
+    if (id < 1 || id > NCOLUMNS)
 	return -1;
 
-    ip = fields[id-1].flag;
+    ip = columns[id-1].flag;
     *ip = state;
     return *ip;
 }
 
 int
-field_enable_flag(int id) {
+column_enable_flag(int id) {
     int f;
 
-    if (field_get_flag(id, &f) < 0)
+    if (column_get_flag(id, &f) < 0)
 	return -1;
 
     if (!f)
-	return field_set_flag(id, 1);
+	return column_set_flag(id, 1);
 
     return f;
 }
 
 
 int
-field_enable_str(char *str) {
+column_str2flags(char *str) {
     int id;
     char *cp;
+    int f = 1;
+	
+
+    if (*str != '+' && *str != '-') {
+	int i;
+
+	for (i = 1; i <= NCOLUMNS; i++)
+	    column_set_flag(i, 0);
+    }
     
     cp = strtok(str, ",");
     while (cp) {
-	id = field_name2id(cp);
-	if (!id)
-	    return -1;
+	if (*cp == '-') {
+	    f = 0;
+	    ++cp;
+	} else if (*cp == '+') {
+	    f = 1;
+	    ++cp;
+	}
 	
-	field_set_flag(id, 1);
+	char *ep = strrchr(cp, '=');
+	if (ep) {
+	    *ep++ = '\0';
+	    if (sscanf(ep, "%d", &f) < 1)
+		return -1;
+	}
+
+	if (strcasecmp(cp, "ALL") == 0) {
+	    int i;
+	    
+	    for (i = 1; i <= NCOLUMNS; i++)
+		column_set_flag(i, f);
+	} else {
+	    id = column_name2id(cp);
+	    if (!id)
+		return -1;
+	    column_set_flag(id, f);
+	}
+	
 	cp = strtok(NULL, ",");
     }
 
@@ -670,7 +727,7 @@ static int
 drive_sort(const void *a,
 	   const void *b) {
     if (f_sort) {
-	off_t offset = fields[f_sort-1].offset;
+	off_t offset = columns[f_sort-1].offset;
 	DRIVE *ad = (DRIVE *) a;
 	DRIVE *bd = (DRIVE *) b;
 	
@@ -694,9 +751,12 @@ main(int argc,
     int i, j;
     int rc = 0;
     int numlen = 1;
+    int c_width = 0;
+    int seplen = 3;
     
-
+    
     argv0 = argv[0];
+    terminal_size(&t_width, &t_height);
 
     dv = calloc((ds = 1024), sizeof(DRIVE));
     if (!dv) {
@@ -714,34 +774,34 @@ main(int argc,
 		
 	    case 'S':
 		if (argv[i][j+1]) {
-		    f_sort = field_name2id(argv[i]+j+1);
+		    f_sort = column_name2id(argv[i]+j+1);
 		    if (f_sort < 0) {
-			fprintf(stderr, "%s: Error: %s: Invalid field name for '-S'\n",
+			fprintf(stderr, "%s: Error: %s: Invalid column name for '-S'\n",
 				argv[0], argv[i]+j+1);
 			exit(1);
 		    }
-		    field_enable_flag(f_sort);
+		    column_enable_flag(f_sort);
 		    goto NextArg;
 		}
 
 		if (argv[i+1] && argv[i+1][0] != '-') {
-		    f_sort = field_name2id(argv[++i]);
+		    f_sort = column_name2id(argv[++i]);
 		    if (f_sort < 0) {
-			fprintf(stderr, "%s: Error: %s: Invalid field name for '-S'\n",
+			fprintf(stderr, "%s: Error: %s: Invalid column name for '-S'\n",
 				argv[0], argv[i]);
 			exit(1);
 		    }
-		    field_enable_flag(f_sort);
+		    column_enable_flag(f_sort);
 		    goto NextArg;
 		}
 
 		fprintf(stderr, "%s: Error: Missing value for -S\n", argv[0]);
 		exit(1);
 		
-	    case 'E':
+	    case 'C':
 		if (argv[i][j+1]) {
-		    if (field_enable_str(argv[i]+j+1) < 0) {
-			fprintf(stderr, "%s: Error: %s: Invalid field name(s) for '-E'\n",
+		    if (column_str2flags(argv[i]+j+1) < 0) {
+			fprintf(stderr, "%s: Error: %s: Invalid column name(s) for '-C'\n",
 				argv[0], argv[i]+j+1);
 			exit(1);
 		    }
@@ -749,8 +809,8 @@ main(int argc,
 		}
 
 		if (argv[i+1] && argv[i+1][0] != '-') {
-		    if (field_enable_str(argv[++i]) < 0) {
-			fprintf(stderr, "%s: Error: %s: Invalid field name(s) for '-E'\n",
+		    if (column_str2flags(argv[++i]) < 0) {
+			fprintf(stderr, "%s: Error: %s: Invalid column name(s) for '-C'\n",
 				argv[0], argv[i]);
 			exit(1);
 		    }
@@ -761,10 +821,10 @@ main(int argc,
 		exit(1);
 		
 	    case 'W':
-		if (argv[i][j+1] && sscanf(argv[i]+j+1, "%d", &f_maxwidth) == 1)
+		if (argv[i][j+1] && sscanf(argv[i]+j+1, "%d", &f_width) == 1)
 		    goto NextArg;
 		    
-		if (argv[i+1] && argv[i+1][0] != '-' && sscanf(argv[i+1], "%d", &f_maxwidth) == 1)
+		if (argv[i+1] && argv[i+1][0] != '-' && sscanf(argv[i+1], "%d", &f_width) == 1)
 		    goto NextArg;
 		
 		fprintf(stderr, "%s: Error: Missing value for -W\n", argv[0]);
@@ -800,8 +860,6 @@ main(int argc,
 		
 	    case 'v':
 		f_verbose++;
-		if (f_verbose > 2)
-		    f_maxwidth = 0;
 		break;
 
 	    case 's':
@@ -893,49 +951,76 @@ main(int argc,
     if (!dc)
 	return 0;
 
+    seplen = strlen(f_sep);
     for (i = 0; i < dc; i++) {
-	for (j = 0; j < NFIELDS; j++) {
-	    struct drive_field *dfp = &fields[j];
+	for (j = 0; j < NCOLUMNS; j++) {
+	    struct drive_column *dfp = &columns[j];
 	    int w;
 	    char *cp;
 
-	    if (!*fields[j].flag)
+	    if (!*columns[j].flag)
 		continue;
 	    
 	    cp = * (char **) ((uint8_t *) &dv[i] + dfp->offset);
 
 	    w = (dfp->width >= 0 ? dfp->width : -dfp->width);
-	    strntrim(cp, &w, f_maxwidth);
+	    strntrim(cp, &w, f_colwidth);
 	    dfp->width = (dfp->width >= 0 ? w : -w);
 	}
     }
 
+    c_width = 0;
+    for (j = 0; j < NCOLUMNS; j++) {
+	struct drive_column *dfp = &columns[j];
+	int w;
+	
+	if (!*columns[j].flag)
+	    continue;
+
+	w = dfp->width;
+	c_width += (w >= 0 ? w : -w)+seplen;
+    }
+    
     numlen = (int) (log10(dc)+1);
+    c_width += numlen;
+
+
+    int x_width = (f_width > 0 && f_width < t_width) ? f_width : t_width;
+
+    if (x_width > 0) {
+	for (j = NCOLUMNS; j > 0 && c_width > x_width; j--) {
+	    int w = columns[j-1].width;
+	    
+	    column_set_flag(j, 0);
+	    c_width -= (w >= 0 ? w : -w)+seplen;
+	}
+    }
+    
     qsort(&dv[0], dc, sizeof(dv[0]), drive_sort);
 
     if (isatty(1)) {
-	p_field("#", numlen, "\033[1;4m");
-	for (j = 0; j < NFIELDS; j++) {
-	    struct drive_field *dfp = &fields[j];
+	p_column("#", numlen, "\033[1;4m");
+	for (j = 0; j < NCOLUMNS; j++) {
+	    struct drive_column *dfp = &columns[j];
 	    
-	    if (!*fields[j].flag)
+	    if (!*columns[j].flag)
 		continue;
-	    p_field(dfp->name, dfp->width, f_sep);
+	    p_column(dfp->name, dfp->width, f_sep);
 	}
 	puts("\033[0m");
     }
 
     for (i = 0; i < dc; i++) {
 	printf("%*u", numlen, i+1);
-	for (j = 0; j < NFIELDS; j++) {
-	    struct drive_field *dfp = &fields[j];
+	for (j = 0; j < NCOLUMNS; j++) {
+	    struct drive_column *dfp = &columns[j];
 	    char *cp;
 	    
-	    if (!*fields[j].flag)
+	    if (!*columns[j].flag)
 		continue;
 	    
 	    cp = * (char **) ((uint8_t *) &dv[i] + dfp->offset);
-	    p_field(cp, dfp->width, f_sep);
+	    p_column(cp, dfp->width, f_sep);
 	}
 	putchar('\n');
     }
