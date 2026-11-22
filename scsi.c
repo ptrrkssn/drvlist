@@ -161,10 +161,7 @@ is_invalid(uint8_t *data,
 
 int
 drive_scsi_has_vpd_page(DRIVE *dp,
-			uint8_t page_id,
-			int retry_count,
-			int timeout,
-			int verbosemode) {
+			uint8_t page_id) {
 	union ccb *ccb = NULL;
 	struct scsi_vpd_supported_page_list sup_pages;
 	int i;
@@ -178,21 +175,19 @@ drive_scsi_has_vpd_page(DRIVE *dp,
 	memset(&sup_pages, 0, sizeof(sup_pages));
 
 	scsi_inquiry(&ccb->csio,
-	 /*retries*/ retry_count,
+	 /*retries*/ 1,
 	  /*cbfcnp*/ NULL,
-    /* tag_action */ CAM_TAG_ACTION_NONE, /* MSG_SIMPLE_Q_TAG, */
+    /* tag_action */ CAM_TAG_ACTION_NONE,
        /* inq_buf */ (uint8_t *)&sup_pages,
        /* inq_len */ sizeof(sup_pages),
 	  /* evpd */ 1,
      /* page_code */ SVPD_SUPPORTED_PAGE_LIST,
      /* sense_len */ SSD_FULL_SIZE,
-       /* timeout */ timeout ? timeout : 5000);
+       /* timeout */ 5000);
 
 	/* Disable freezing the device queue */
 	ccb->ccb_h.flags |= CAM_DEV_QFRZDIS;
-
-	if (retry_count != 0)
-		ccb->ccb_h.flags |= CAM_PASS_ERR_RECOVER;
+	ccb->ccb_h.flags |= CAM_PASS_ERR_RECOVER;
 
 	if (cam_send_ccb(dp->cam, ccb) < 0) {
 		cam_freeccb(ccb);
@@ -202,22 +197,22 @@ drive_scsi_has_vpd_page(DRIVE *dp,
 	}
 
 	if ((ccb->ccb_h.status & CAM_STATUS_MASK) != CAM_REQ_CMP) {
-		if (verbosemode != 0)
-			cam_error_print(dp->cam, ccb, CAM_ESF_ALL,
-					CAM_EPF_ALL, stderr);
-		retval = -1;
-		goto bailout;
+	    if (f_debug)
+		cam_error_print(dp->cam, ccb, CAM_ESF_ALL,
+				CAM_EPF_ALL, stderr);
+	    retval = -1;
+	    goto bailout;
 	}
 
 	for (i = 0; i < sup_pages.length; i++) {
-		if (sup_pages.list[i] == page_id) {
-			retval = 1;
-			goto bailout;
-		}
+	    if (sup_pages.list[i] == page_id) {
+		retval = 1;
+		goto bailout;
+	    }
 	}
 bailout:
 	if (ccb != NULL)
-		cam_freeccb(ccb);
+	    cam_freeccb(ccb);
 
 	return (retval);
 }
@@ -942,8 +937,10 @@ drive_scsi_selftest_results_status(DRIVE *dp) {
 
 int
 drive_scsi_is_satl(DRIVE *dp) {
-    return drive_scsi_has_vpd_page(dp, SVPD_ATA_INFORMATION, 1, 0, 0);
+    return drive_scsi_has_vpd_page(dp, SVPD_ATA_INFORMATION);
 }
+
+
 
 
 int

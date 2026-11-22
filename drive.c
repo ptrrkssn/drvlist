@@ -198,35 +198,6 @@ drive_init(DRIVE *dp) {
     dp->raw.temperature    = DRIVE_NO_TEMPERATURE;
 }
 
-static int
-drive_sort_ident(const DRIVE *da,
-		 const DRIVE *db) {
-    return strcmp(da->ident, db->ident);
-}
-
-static int
-drive_sort_devpath(const DRIVE *da,
-		   const DRIVE *db) {
-    int d;
-
-    d = strcmp(da->ctrl, db->ctrl);
-    if (d)
-	return d;
-    
-    return strcmp(da->path, db->path);
-}
-
-int
-drive_sort(const void *a,
-	   const void *b) {
-    if (f_sort) {
-	if (strcmp(f_sort, "ident") == 0)
-	    return drive_sort_ident((const DRIVE *) a, (const DRIVE *) b);
-    }
-    
-    return drive_sort_devpath((const DRIVE *) a, (const DRIVE *) b);
-}
-
 
 
 const char *

@@ -68,22 +68,33 @@ char *argv0 = "drvlist";
 
 int f_verbose = 0;
 int f_debug = 0;
-int f_temp = 0;
-int f_smart = 0;
-int f_tests = 0;
-int f_hours = 0;
-int f_proto = 1;
-int f_xport = 1;
-int f_ctrl = 0;
-int f_path = 0;
-int f_phys = 0;
-int f_made = 0;
-int f_wear = 0;
+int f_sort = 0;
+int f_dir  = 1;
 int f_multipath = 0;
 int f_maxwidth = 22;
 
 char *f_sep = " : ";
-char *f_sort = NULL;
+
+
+int f_vendor = 1;
+int f_product = 1;
+int f_version = 1;
+int f_ident = 1;
+int f_size = 1;
+int f_temp = 0;
+int f_smart = 0;
+int f_tests = 0;
+int f_hours = 0;
+int f_wear = 0;
+int f_made = 0;
+int f_proto = 0;
+int f_xport = 0;
+int f_name = 1;
+int f_ctrl = 0;
+int f_path = 0;
+int f_phys = 0;
+
+
 
 
 
@@ -143,44 +154,48 @@ struct drive_field {
     char *name;
     int width;
     off_t offset;
-    bool disabled;
+    int *flag;
 } fields[] = {
-#define FIELD_VENDOR 0
-    { "VENDOR",   -6, offsetof(DRIVE, vendor) },
-#define FIELD_PRODUCT 1
-    { "PRODUCT",  -7, offsetof(DRIVE, product) },
-#define FIELD_VERSION 2
-    { "VERSION",  -7, offsetof(DRIVE, version) },    
-#define FIELD_IDENT 3
-    { "IDENT",    -5, offsetof(DRIVE, ident) },    
-#define FIELD_SIZE 4
-    { "SIZE",      4, offsetof(DRIVE, size) },    
-#define FIELD_TEMP 5
-    { "TEMP",      4, offsetof(DRIVE, temp) },    
-#define FIELD_SMART 6
-    { "SMART",    -5, offsetof(DRIVE, smart) },    
-#define FIELD_TESTS 7
-    { "TESTS",    -5, offsetof(DRIVE, tests) },    
-#define FIELD_HOURS 8
-    { "HOURS",     5, offsetof(DRIVE, hours) },    
-#define FIELD_WEAR 9
-    { "WEAR",      4, offsetof(DRIVE, wear) },    
-#define FIELD_PROTO 10
-    { "PROTO",    -5, offsetof(DRIVE, proto) },    
-#define FIELD_XPORT 11
-    { "XPORT",    -5, offsetof(DRIVE, xport) },    
-#define FIELD_MADE 12
-    { "MADE",     -4, offsetof(DRIVE, made) },    
-#define FIELD_NAMES 13
-    { "NAMES",    -5, offsetof(DRIVE, names) },    
-#define FIELD_CTRL 14
-    { "CTRL",     -4, offsetof(DRIVE, ctrl) },    
-#define FIELD_PATH 15
-    { "PATH",     -4, offsetof(DRIVE, path) },    
-#define FIELD_PHYS 16
-    { "PHYS",     -4, offsetof(DRIVE, phys) },    
-    { NULL, 0, 0 },
+#define FIELD_VENDOR 1
+    { "VENDOR",   -6, offsetof(DRIVE, vendor),  &f_vendor },
+#define FIELD_PRODUCT 2
+    { "PRODUCT",  -7, offsetof(DRIVE, product), &f_product },
+#define FIELD_VERSION 3
+    { "VERSION",  -7, offsetof(DRIVE, version), &f_version },    
+#define FIELD_IDENT 4
+    { "IDENT",    -5, offsetof(DRIVE, ident),   &f_ident },    
+#define FIELD_SIZE 5
+    { "SIZE",      4, offsetof(DRIVE, size),    &f_size },    
+#define FIELD_TEMP 6
+    { "TEMP",      4, offsetof(DRIVE, temp),    &f_temp },    
+#define FIELD_SMART 7
+    { "SMART",    -5, offsetof(DRIVE, smart),   &f_smart },    
+#define FIELD_TESTS 8
+    { "TESTS",    -5, offsetof(DRIVE, tests),   &f_tests },    
+#define FIELD_HOURS 9
+    { "HOURS",     5, offsetof(DRIVE, hours),   &f_hours },    
+#define FIELD_WEAR 10
+    { "WEAR",      4, offsetof(DRIVE, wear),    &f_wear },    
+#define FIELD_MADE 11
+    { "MADE",     -4, offsetof(DRIVE, made),    &f_made },    
+#define FIELD_PROTO 12
+    { "PROTO",    -5, offsetof(DRIVE, proto),   &f_proto },    
+#define FIELD_XPORT 13
+    { "XPORT",    -5, offsetof(DRIVE, xport),   &f_xport },    
+#define FIELD_NAME 14
+    { "NAME",     -5, offsetof(DRIVE, name),    &f_name },    
+#define FIELD_CTRL 15
+    { "CTRL",     -4, offsetof(DRIVE, ctrl),    &f_ctrl },    
+#define FIELD_PATH 16
+    { "PATH",     -4, offsetof(DRIVE, path),    &f_path },    
+#define FIELD_PHYS 17
+    { "PHYS",     -4, offsetof(DRIVE, phys),    &f_phys },    
 };
+
+#define NFIELDS (sizeof(fields)/sizeof(fields[0]))
+
+
+
 
 int
 do_device(char *dname) {
@@ -294,7 +309,7 @@ do_device(char *dname) {
 		free(ident);
 
 	    /* Add alternate names */
-	    strdupcat(&dp->names, dname);
+	    strdupcat(&dp->name, dname);
 	    strdupcat(&dp->path, pnbuf);
 	    strdupcat(&dp->ctrl, drvbuf);
 
@@ -308,7 +323,7 @@ do_device(char *dname) {
 	    dp->cam = cam;
 	    dp->ident = ident;
 	    
-	    dp->names = strdup(dname);
+	    dp->name = strdup(dname);
 	    dp->path = strdup(pnbuf);
 	    if (msize > 0)
 		dp->size = size2str(msize);
@@ -513,14 +528,14 @@ do_device(char *dname) {
 	if (i >= dc) {
 	    /* New device */
 	    dp->ident = ident;
-	    dp->names = strdup(dname);
+	    dp->name = strdup(dname);
 	    dp->phys = strdup(physbuf);
 	    if (msize > 0)
 		dp->size = size2str(msize);
 	    ++dc;
 	} else {
 	    free(ident);
-	    strdupcat(&dp->names, dname);
+	    strdupcat(&dp->name, dname);
 	}
 
     }
@@ -541,6 +556,133 @@ p_field(const char *value,
     else
 	return printf("%s%*s", separator ? separator : "", width, value);
 }
+
+
+int
+field_name2id(const char *name) {
+    int i;
+
+    for (i = 0; i < NFIELDS && strcasecmp(name, fields[i].name) != 0; i++)
+	;
+
+    if (i < NFIELDS)
+	return i+1;
+
+    return 0;
+}
+
+const char *
+field_id2name(int id) {
+    if (id < 1 || id > NFIELDS)
+	return NULL;
+    
+    return fields[id-1].name;
+}
+
+
+int
+field_get_flag(int id,
+	       int *state) {
+    int *ip;
+    
+      if (id < 1 || id > NFIELDS)
+	return -1;
+
+    ip = fields[id-1].flag;
+    if (state)
+	*state = *ip;
+    
+    return *ip;
+}
+
+int
+field_set_flag(int id,
+	      int state) {
+    int *ip;
+    
+    if (id < 1 || id > NFIELDS)
+	return -1;
+
+    ip = fields[id-1].flag;
+    *ip = state;
+    return *ip;
+}
+
+int
+field_enable_flag(int id) {
+    int f;
+
+    if (field_get_flag(id, &f) < 0)
+	return -1;
+
+    if (!f)
+	return field_set_flag(id, 1);
+
+    return f;
+}
+
+
+int
+field_enable_str(char *str) {
+    int id;
+    char *cp;
+    
+    cp = strtok(str, ",");
+    while (cp) {
+	id = field_name2id(cp);
+	if (!id)
+	    return -1;
+	
+	field_set_flag(id, 1);
+	cp = strtok(NULL, ",");
+    }
+
+    return 0;
+}
+
+static int safe_strcmp(const char *a,
+		       const char *b) {
+    if (!a && !b)
+	return 0;
+
+    if (!a && b)
+	return -1;
+
+    if (a && !b)
+	return 1;
+
+    return strcmp(a, b);
+}
+
+static int
+drive_sort_devpath(const DRIVE *da,
+		   const DRIVE *db) {
+    int d;
+
+    d = safe_strcmp(da->ctrl, db->ctrl) * f_dir;
+    if (d)
+	return d;
+    
+    return safe_strcmp(da->path, db->path) * f_dir;
+}
+
+static int
+drive_sort(const void *a,
+	   const void *b) {
+    if (f_sort) {
+	off_t offset = fields[f_sort-1].offset;
+	DRIVE *ad = (DRIVE *) a;
+	DRIVE *bd = (DRIVE *) b;
+	
+	char *as = * (char **) ((uint8_t *) ad + offset);
+	char *bs = * (char **) ((uint8_t *) bd + offset);
+
+	return safe_strcmp(as, bs) * f_dir;
+    }
+    
+    return drive_sort_devpath((const DRIVE *) a, (const DRIVE *) b);
+}
+
 
 
 int
@@ -572,12 +714,46 @@ main(int argc,
 		
 	    case 'S':
 		if (argv[i][j+1]) {
-		    f_sort = strdup(argv[i]+j+1);
+		    f_sort = field_name2id(argv[i]+j+1);
+		    if (f_sort < 0) {
+			fprintf(stderr, "%s: Error: %s: Invalid field name for '-S'\n",
+				argv[0], argv[i]+j+1);
+			exit(1);
+		    }
+		    field_enable_flag(f_sort);
 		    goto NextArg;
 		}
 
 		if (argv[i+1] && argv[i+1][0] != '-') {
-		    f_sort = strdup(argv[++i]);
+		    f_sort = field_name2id(argv[++i]);
+		    if (f_sort < 0) {
+			fprintf(stderr, "%s: Error: %s: Invalid field name for '-S'\n",
+				argv[0], argv[i]);
+			exit(1);
+		    }
+		    field_enable_flag(f_sort);
+		    goto NextArg;
+		}
+
+		fprintf(stderr, "%s: Error: Missing value for -S\n", argv[0]);
+		exit(1);
+		
+	    case 'E':
+		if (argv[i][j+1]) {
+		    if (field_enable_str(argv[i]+j+1) < 0) {
+			fprintf(stderr, "%s: Error: %s: Invalid field name(s) for '-E'\n",
+				argv[0], argv[i]+j+1);
+			exit(1);
+		    }
+		    goto NextArg;
+		}
+
+		if (argv[i+1] && argv[i+1][0] != '-') {
+		    if (field_enable_str(argv[++i]) < 0) {
+			fprintf(stderr, "%s: Error: %s: Invalid field name(s) for '-E'\n",
+				argv[0], argv[i]);
+			exit(1);
+		    }
 		    goto NextArg;
 		}
 
@@ -617,37 +793,23 @@ main(int argc,
 		
 		f_sep = " : ";
 		break;
+
+	    case 'r':
+		f_dir = -1;
+		break;
 		
 	    case 'v':
 		f_verbose++;
 		if (f_verbose > 2)
 		    f_maxwidth = 0;
 		break;
+
+	    case 's':
+		f_smart++;
+		break;
 		
 	    case 'm':
 		f_multipath++;
-		break;
-		
-	    case 'p':
-		f_phys++;
-		f_maxwidth = 0;
-		break;
-		
-	    case 't':
-		f_temp++;
-		break;
-		
-	    case 's':
-		f_smart++;
-		f_tests++;
-		break;
-		
-	    case 'c':
-		f_ctrl++;
-		break;
-		
-	    case 'w':
-		f_wear++;
 		break;
 		
 	    default:
@@ -667,15 +829,13 @@ main(int argc,
 		f_hours++;
 		if (f_verbose > 3) {
 		    f_wear++;
+		    f_made++;
 		    if (f_verbose > 4) {
 			f_ctrl++;
 			if (f_verbose > 5) {
 			    f_path++;
 			    if (f_verbose > 6) {
 				f_phys++;
-				if (f_verbose > 7) {
-				    f_made++;
-				}
 			    }
 			}
 		    }
@@ -733,46 +893,13 @@ main(int argc,
     if (!dc)
 	return 0;
 
-    if (!f_temp)
-	fields[FIELD_TEMP].disabled = 1;
-
-    if (f_smart)
-	fields[FIELD_SMART].disabled = 1;
-
-    if (f_tests)
-	fields[FIELD_TESTS].disabled = 1;
-
-    if (f_hours)
-	fields[FIELD_HOURS].disabled = 1;
-
-    if (f_wear)
-	fields[FIELD_WEAR].disabled = 1;
-
-    if (f_proto)
-	fields[FIELD_PROTO].disabled = 1;
-
-    if (f_xport)
-	fields[FIELD_XPORT].disabled = 1;
-
-    if (f_made)
-	fields[FIELD_MADE].disabled = 1;
-
-    if (f_ctrl)
-	fields[FIELD_CTRL].disabled = 1;
-    
-    if (f_path)
-	fields[FIELD_PATH].disabled = 1;
-	
-    if (f_phys)
-	fields[FIELD_PHYS].disabled = 1;
-    
     for (i = 0; i < dc; i++) {
-	for (j = 0; fields[j].name; j++) {
+	for (j = 0; j < NFIELDS; j++) {
 	    struct drive_field *dfp = &fields[j];
 	    int w;
 	    char *cp;
 
-	    if (dfp->disabled)
+	    if (!*fields[j].flag)
 		continue;
 	    
 	    cp = * (char **) ((uint8_t *) &dv[i] + dfp->offset);
@@ -788,9 +915,10 @@ main(int argc,
 
     if (isatty(1)) {
 	p_field("#", numlen, "\033[1;4m");
-	for (j = 0; fields[j].name; j++) {
+	for (j = 0; j < NFIELDS; j++) {
 	    struct drive_field *dfp = &fields[j];
-	    if (dfp->disabled)
+	    
+	    if (!*fields[j].flag)
 		continue;
 	    p_field(dfp->name, dfp->width, f_sep);
 	}
@@ -799,11 +927,11 @@ main(int argc,
 
     for (i = 0; i < dc; i++) {
 	printf("%*u", numlen, i+1);
-	for (j = 0; fields[j].name; j++) {
+	for (j = 0; j < NFIELDS; j++) {
 	    struct drive_field *dfp = &fields[j];
 	    char *cp;
 	    
-	    if (dfp->disabled)
+	    if (!*fields[j].flag)
 		continue;
 	    
 	    cp = * (char **) ((uint8_t *) &dv[i] + dfp->offset);

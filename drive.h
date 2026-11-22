@@ -76,7 +76,7 @@ typedef struct {
     
     /* Printable information */
     char *ident;     /* Unique ID (serial number) */
-    char *names;     /* da0, ada0, nda0 */
+    char *name;      /* da0, ada0, nda0 */
     char *vendor;    /* INTEL, SEAGATE, WDC, HGST */
     char *product;   
     char *version;   /* Firmware version */
@@ -128,10 +128,6 @@ extern int ds;
 
 extern void
 drive_init(DRIVE *dp);
-
-extern int
-drive_sort(const void *a,
-	   const void *b);
 
 extern const char *
 drive_cam_devtype2str(uint8_t devtype);
