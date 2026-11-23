@@ -193,7 +193,7 @@ drive_init(DRIVE *dp) {
     memset(dp, 0, sizeof(*dp));
     dp->raw.proto = DRIVE_PROTO_UNKNOWN;
     dp->raw.xport = XPORT_UNKNOWN;
-    dp->raw.power_on_hours = DRIVE_NO_POWER_ON_HOURS;
+    dp->raw.power_on_hours = DRIVE_NO_HOURS;
     dp->raw.endurance_used = DRIVE_NO_ENDURANCE_USED;
     dp->raw.temperature    = DRIVE_NO_TEMPERATURE;
 }

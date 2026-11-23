@@ -126,7 +126,7 @@ get_health_status(DRIVE *dp) {
 	    rc = drive_scsi_health_status(dp);
 	break;
     case DRIVE_PROTO_ATA:
-	rc = ata_health_status(dp);
+	rc = drive_ata_health_status(dp);
 	break;
     case DRIVE_PROTO_NVME:
 	rc = nvme_health_status(dp);
@@ -145,23 +145,25 @@ static void
 spin(void) {
     static char dials[] = "|/-\\";
     static int pos = 0;
+#if 0
     static time_t now, last = 0;
-    
+#endif
     if (!isatty(fileno(stderr)))
 	return;
-
+#if 0
     time(&now);
     if (!last)
 	last = now;
     if (last == now)
 	return;
-    
+#endif
     putc(dials[pos], stderr);
     putc('\b', stderr);
     fflush(stderr);
     pos = (pos+1)%4;
-
+#if 0
     last = now;
+#endif
 }
 
 
@@ -275,6 +277,7 @@ do_device(char *dname) {
     if (fd < 0) {
 	fprintf(stderr, "%s: Error: %s (%s): open(O_RDONLY): %s\n",
 		argv0, path, path, strerror(errno));
+	exit(1);
     }
 
     /* Get drive size */
@@ -416,9 +419,7 @@ do_device(char *dname) {
 
 		if (!dp->vendor || !dp->product || !dp->version) {
 		    if (dp->raw.proto == DRIVE_PROTO_ATA) {
-			/* ATA device */
-			ata_identify(dp, &dp->vendor, &dp->product, &dp->version, &have_selftest);
-			dp->flags.have_selftest = have_selftest;
+			drive_ata_identify(dp);
 		    }
 		}
 
@@ -476,7 +477,7 @@ do_device(char *dname) {
 		    dp->temp = strdup(buf);
 		}
 
-		if (dp->raw.power_on_hours != DRIVE_NO_POWER_ON_HOURS) {
+		if (dp->raw.power_on_hours != DRIVE_NO_HOURS) {
 		    sprintf(buf, "%zu", dp->raw.power_on_hours);
 		    dp->hours = strdup(buf);
 		}
@@ -522,7 +523,7 @@ do_device(char *dname) {
 
 	memset(idbuf, 0, sizeof(idbuf));
 	if (ioctl(fd, DIOCGIDENT, idbuf) < 0) {
-	    fprintf(stderr, "%s: Error: %s: ioctl(DIOCGIDENT): %s",
+	    fprintf(stderr, "%s: Error: %s: ioctl(DIOCGIDENT): %s\n",
 		    argv0, path, strerror(errno));
 	    exit(1);
 	} else {

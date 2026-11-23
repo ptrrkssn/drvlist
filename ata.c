@@ -59,34 +59,28 @@ extern int f_debug;
  * Local definitions avoid depending on the exact names exported by
  * <sys/ata.h> in a particular FreeBSD source version.
  */
-#define ATA_CMD_SMART                 0xB0
-#define ATA_SMART_READ_DATA           0xD0
-#define ATA_SMART_RETURN_STATUS       0xDA
+#define ATA_CMD_SMART                 0xb0
 
-#define ATA_SMART_LBA_GOOD            0x00C24F00U
-#define ATA_SMART_LBA_FAILED          0x002CF400U
-
+#define ATA_SMART_READ_DATA           0xd0
 #define ATA_SMART_READ_LOG            0xd5
-#define ATA_SELF_TEST_LOG_ADDRESS     0x06
-#define ATA_SMART_READ_LOG_LBA        0x00c24f06U
+#define ATA_SMART_RETURN_STATUS       0xda
 
-#define ATA_SMART_LOG_SIZE            512
-#define ATA_SELF_TEST_ENTRY_SIZE      24
-#define ATA_SELF_TEST_ENTRY_COUNT     21
-#define ATA_SELF_TEST_ENTRY_OFFSET    2
-#define ATA_SELF_TEST_INDEX_OFFSET    508
+#define ATA_SMART_LBA_GOOD                      0x00c24f00U
+#define ATA_SMART_LBA_FAILED          	        0x002cf400U
 
+#define ATA_SMART_LOG_DIRECTORY_LBA             0x00c24f00U
+#define ATA_SMART_SUMMARY_ERROR_LOG_LBA         0x00c24f01U
+#define ATA_SMART_COMPREHENSIVE_ERROR_LOG_LBA   0x00c24f02U
+#define ATA_SMART_SELF_TEST_LOG_LBA             0x00c24f06U
+#define ATA_SMART_SELECTIVE_SELF_TEST_LOG_LBA   0x00c24f09U
 
-/*
- * SMART commands require these values in the LBA mid and LBA high
- * registers:
- *
- *     LBA low  = 0x00
- *     LBA mid  = 0x4f
- *     LBA high = 0xc2
- *
- * ata_28bit_cmd() accepts them as a 28-bit LBA value.
- */
+#define ATA_SMART_LOG_SIZE            	    512
+
+#define ATA_SMART_SELF_TEST_ENTRY_SIZE      24
+#define ATA_SMART_SELF_TEST_ENTRY_COUNT     21
+#define ATA_SMART_SELF_TEST_ENTRY_OFFSET    2
+#define ATA_SMART_SELF_TEST_INDEX_OFFSET    508
+
 #define ATA_SMART_LBA                   0x00c24f00U
 
 #define SMART_DATA_SIZE                 512
@@ -94,6 +88,7 @@ extern int f_debug;
 #define SMART_ATTRIBUTE_SIZE            12
 #define SMART_ATTRIBUTE_COUNT           30
 
+#define SMART_ATTR_POWER_ON_HOURS         9
 #define SMART_ATTR_AIRFLOW_TEMPERATURE  190
 #define SMART_ATTR_TEMPERATURE_CELSIUS  194
 
@@ -105,6 +100,124 @@ struct ata_smart_attribute {
     uint8_t raw[6];
     uint8_t reserved;
 };
+
+struct ata_smart_log_directory {
+    uint16_t version;
+    uint16_t sectors[255];
+};
+
+
+
+static enum drive_selftest_status
+classify_ata_selftest(uint8_t status)
+{
+    switch (status) {
+    case 0x0: /* Completed without error */
+        return (DRIVE_SELFTEST_PASSED);
+
+    case 0x1: /* Aborted by host */
+    case 0x2: /* Interrupted by host reset */
+        return (DRIVE_SELFTEST_ABORTED);
+
+    case 0x3: 
+    case 0x4:
+    case 0x5:
+    case 0x6:
+    case 0x7:
+    case 0x8:
+        return (DRIVE_SELFTEST_FAILED);
+
+    case 0xf:
+        return (DRIVE_SELFTEST_RUNNING);
+
+    default:
+        return (DRIVE_SELFTEST_UNKNOWN);
+    }
+}
+
+static const char *
+ata_cap_gen2str(uint16_t cap) {
+    if (cap & ATA_SATA_GEN3)
+	return "SATA III";
+    else if (cap & ATA_SATA_GEN2)
+	return "SATA II";
+    else if (cap & ATA_SATA_GEN1)
+	return "SATA I";
+    else
+	return "?";
+}
+
+const char *
+ata_selftest_status2str(uint8_t status) {
+    switch (status) {
+    case 0x0:
+	return "Completed without error";
+    case 0x01:
+	return "Aborted by host";
+    case 0x2:
+	return "Interrupted by host";
+    case 0x3:
+	return "Fatal or unknown error prevented completion";
+    case 0x4:
+	return "Completed with unknown test element failure";
+    case 0x5:
+	return "Completed with electrical element failure";
+    case 0x6:
+	return "Completed with servo/seek element failure";
+    case 0x7:
+	return "Completed with read element failure";
+    case 0x8:
+	return "Completed with handling-damage failure";
+    case 0x9:
+	return "Unknown error 0x09";
+    case 0xA:
+	return "Unknown error 0x0A";
+    case 0xB:
+	return "Unknown error 0x0B";
+    case 0xC:
+	return "Unknown error 0x0C";
+    case 0xD:
+	return "Unknown error 0x0D";
+    case 0xE:
+	return "Unknown error 0x0E";
+    case 0xF:
+	return "Self-test in progress";
+    default:
+	return "?";
+    }
+}
+
+const char *
+ata_selftest_type2str(uint8_t type) {
+    switch (type) {
+    case 0x00:
+	return "Offline data collection";
+    case 0x01:
+	return "Short self-test, offline/background";
+    case 0x02:
+	return "Long self-test, offline/background";
+    case 0x03:
+	return "Conveyance self-test, offline/background";
+    case 0x04:
+	return "Selective self-test, offline/background";
+    case 0x80:
+	return "Offline data collection, captive/foreground";
+    case 0x81:
+	return "Short self-test, captive/foreground";
+    case 0x82:
+	return "Long self-test, captive/foreground";
+    case 0x83:
+	return "Conveyance self-test, captive/foreground";
+    case 0x84:
+	return "Selective self-test, captive/foreground";
+    default:
+	if ((type >= 0x05 && type <= 0x3F) || (type >= 0x85 && type <= 0xBF))
+	    return "Reserved";
+	if ((type >= 0x40 && type <= 0x7F) || (type >= 0xC0 && type <= 0xFF))
+	    return "Vendor specific";
+    }
+    return "?";
+}
 
 
 static int
@@ -120,6 +233,85 @@ ata_smart_checksum_valid(const uint8_t *buffer,
         sum += buffer[i];
 
     return ((sum & 0xffU) == 0);
+}
+
+
+ssize_t
+drive_ata_command(DRIVE *dp,
+		  uint8_t command,
+		  uint8_t code,
+		  uint32_t lba,
+		  void *buf,
+		  size_t bufsize) {
+    struct cam_device *dev = dp->cam;
+    union ccb *ccb;
+    uint32_t cam_status;
+    uint32_t cam_resid;
+    int saved_errno;
+    
+
+    if (!dev || !dp) {
+        errno = EINVAL;
+        return (-1);
+    }
+
+    ccb = cam_getccb(dev);
+    if (ccb == NULL) {
+        errno = ENOMEM;
+        return (-1);
+    }
+
+    cam_fill_ataio(&ccb->ataio,
+		   1,
+		   NULL,
+		   CAM_DIR_IN,
+		   CAM_TAG_ACTION_NONE,
+		   buf,
+		   bufsize,
+		   5000);
+
+    ata_28bit_cmd(&ccb->ataio,
+		  command,
+		  code,
+		  lba,
+		  1);
+    
+    ccb->ccb_h.flags |= CAM_DEV_QFRZDIS;
+    if (cam_send_ccb(dev, ccb) < 0) {
+        saved_errno = errno != 0 ? errno : EIO;
+        cam_freeccb(ccb);
+        errno = saved_errno;
+        return (-1);
+    }
+
+    cam_status = ccb->ccb_h.status & CAM_STATUS_MASK;
+    cam_resid = ccb->ataio.resid;
+    cam_freeccb(ccb);
+    
+    if (cam_status != CAM_REQ_CMP) {
+        fprintf(stderr,
+		"%s%u: ATA COMMAND %02x/%02x failed: CAM status 0x%x\n",
+		dev->given_dev_name,
+		dev->given_unit_number,
+		command, code,
+		cam_status);
+        errno = EIO;
+        return (-1);
+    }
+
+    if (cam_resid != 0) {
+        fprintf(stderr,
+		"%s%u: ATA COMMAND %02x/%02x: incomplete ATA self-test log transfer, "
+		"residual=%u\n",
+		dev->given_dev_name,
+		dev->given_unit_number,
+		command, code,
+		cam_resid);
+        errno = EIO;
+        return (-1);
+    }
+
+    return bufsize-cam_resid;
 }
 
 
@@ -155,113 +347,36 @@ ata_smart_attribute_temperature(const struct ata_smart_attribute *attr,
 }
 
 
-/*
- * Execute a ATA SMART command
- */
-int
+static ssize_t
 ata_cmd_smart(DRIVE *dp,
 	      uint8_t code,
 	      uint8_t *buf,
 	      size_t bufsize) {
-    struct cam_device *dev = dp->cam;
-    union ccb *ccb;
-    uint32_t cam_status;
-    int saved_errno;
-    size_t got;
-    
-
-    if (!dev || !buf) {
-        errno = EINVAL;
-        return -1;
-    }
-
-    memset(buf, 0, bufsize);
-
-    ccb = cam_getccb(dev);
-    if (ccb == NULL) {
-        return -1;
-    }
-
-    /*
-     * Build an ATA data-in request.
-     *
-     * ATA_SMART_READ_DATA transfers one 512-byte sector from the
-     * device to the host.
-     */
-    cam_fill_ataio(&ccb->ataio,
-		   1,                      /* retries */
-		   NULL,                   /* completion callback */
-		   CAM_DIR_IN | CAM_DEV_QFRZDIS,
-		   CAM_TAG_ACTION_NONE,    /* non-NCQ management command */
-		   buf,
-		   bufsize,
-		   5000);                  /* timeout in milliseconds */
-    
-    /*
-     * Construct:
-     *
-     *     command       = SMART (0xb0)
-     *     features      = SMART READ DATA (0xd0)
-     *     sector count  = 1
-     *     LBA low       = 0x00
-     *     LBA mid       = 0x4f
-     *     LBA high      = 0xc2
-     */
-    ata_28bit_cmd(&ccb->ataio,
-		  ATA_CMD_SMART,
-		  code,
-		  ATA_SMART_LBA,
-		  1);
-
-    ccb->ccb_h.flags |= CAM_DEV_QFRZDIS;
-    
-    if (cam_send_ccb(dev, ccb) < 0) {
-        saved_errno = errno != 0 ? errno : EIO;
-        cam_freeccb(ccb);
-        errno = saved_errno;
-        return -1;
-    }
-
-    cam_status = ccb->ccb_h.status & CAM_STATUS_MASK;
-
-    if (cam_status != CAM_REQ_CMP) {
-        cam_freeccb(ccb);
-        errno = EIO;
-        return -1;
-    }
-
-#if 0
-    if (ccb->ataio.resid != 0) {
-        cam_freeccb(ccb);
-        errno = EIO;
-        return -1;
-    }
-#endif
-    
-    got = bufsize - ccb->ataio.resid;
-    cam_freeccb(ccb);
-    
-    return got;
+    return drive_ata_command(dp,
+			     ATA_CMD_SMART,
+			     code,
+			     ATA_SMART_LBA,
+			     buf, bufsize);
 }
-
+			     
 
 int
-ata_drive_temperature(DRIVE *dp) {
-    uint8_t data[SMART_DATA_SIZE];
-    ssize_t len;
+drive_ata_get_smart_data(DRIVE *dp,
+			 uint8_t *buf,
+			 size_t bufsize) {
+    return ata_cmd_smart(dp, ATA_SMART_READ_DATA, buf, bufsize);
+}
+
+int
+drive_ata_parse_smart_data(DRIVE *dp,
+			   uint8_t *buf,
+			   size_t bufsize) {
     uint16_t fallback_temperature;
     size_t offset, i;
     int have_fallback;
-
-
-    len = ata_cmd_smart(dp, ATA_SMART_READ_DATA, data, sizeof(data));
-    if (len < 0)
-	return len;
-    if (len != SMART_DATA_SIZE) {
-	errno = EIO;
-	return -1;
-    }
+    uint64_t poh;
     
+
     /*
      * Prefer attribute 194, Temperature Celsius.
      *
@@ -275,27 +390,42 @@ ata_drive_temperature(DRIVE *dp) {
 	struct ata_smart_attribute *attr;
 	
         offset = SMART_ATTRIBUTE_OFFSET + i * SMART_ATTRIBUTE_SIZE;
+
+	/* Sanity check */
+	if (offset+sizeof(*attr) >= bufsize)
+	    break;
 	
-        attr = (struct ata_smart_attribute *) &data[offset];
+        attr = (struct ata_smart_attribute *) &buf[offset];
         if (attr->id == 0)
             continue;
-	
-        if (attr->id == SMART_ATTR_TEMPERATURE_CELSIUS) {
+
+	switch (attr->id) {
+	case SMART_ATTR_TEMPERATURE_CELSIUS:
             if (ata_smart_attribute_temperature(attr, &dp->raw.temperature) == 0) {
 		if (f_debug)
 		    fprintf(stderr, "\tATA SMART DATA: drive temperature=%u\n", dp->raw.temperature);
                 return 1;
 	    }
-        }
+	    break;
 	
-        if (attr->id == SMART_ATTR_AIRFLOW_TEMPERATURE &&
-            !have_fallback) {
-            if (ata_smart_attribute_temperature(attr, &fallback_temperature) == 0) {
-		if (f_debug)
-		    fprintf(stderr, "\tATA SMART DATA: airflow temperature=%u\n", fallback_temperature);
-                have_fallback = 1;
+	case SMART_ATTR_AIRFLOW_TEMPERATURE:
+            if (!have_fallback) {
+		if (ata_smart_attribute_temperature(attr, &fallback_temperature) == 0) {
+		    if (f_debug)
+			fprintf(stderr, "\tATA SMART DATA: airflow temperature=%u\n", fallback_temperature);
+		    have_fallback = 1;
+		}
 	    }
-        }
+	    break;
+
+	case SMART_ATTR_POWER_ON_HOURS:
+	    poh = get_le16(attr->raw);
+	    if (f_debug)
+		fprintf(stderr, "\tATA SMART DATA: power_on_hours = %lu\n", poh);
+	    if (dp->raw.power_on_hours == DRIVE_NO_HOURS || poh > dp->raw.power_on_hours)
+		dp->raw.power_on_hours = poh;
+	    break;
+	}
     }
     
     if (have_fallback) {
@@ -306,69 +436,22 @@ ata_drive_temperature(DRIVE *dp) {
     return 0;
 }
 
+int
+drive_ata_smart_data(DRIVE *dp) {
+    uint8_t data[SMART_DATA_SIZE];
+    ssize_t res;
 
- 
+    res = drive_ata_get_smart_data(dp, data, sizeof(data));
+    if (res < 0)
+	return res;
 
-
-
-static int
-ata_cam_send(struct cam_device *device, union ccb *ccb)
-{
-	/* Disable freezing the device queue */
-	ccb->ccb_h.flags |= CAM_DEV_QFRZDIS;
-
-
-	if (cam_send_ccb(device, ccb) < 0) {
-		return (1);
-	}
-
-	/*
-	 * Consider any non-CAM_REQ_CMP status as error and report it here,
-	 * unless caller set AP_FLAG_CHK_COND, in which case it is responsible.
-	 */
-	if (!(ccb->ataio.cmd.flags & CAM_ATAIO_NEEDRESULT) &&
-	    (ccb->ccb_h.status & CAM_STATUS_MASK) != CAM_REQ_CMP) {
-		return (1);
-	}
-
-	return (0);
+    return drive_ata_parse_smart_data(dp, data, res);
 }
+    
 
-
-static int
-ata_do_cmd(struct cam_device *device, union ccb *ccb, int retries,
-	   uint32_t flags, uint8_t protocol, uint8_t ata_flags,
-	   uint8_t tag_action, uint8_t command, uint16_t features,
-	   u_int64_t lba, uint16_t sector_count, uint8_t *data_ptr,
-	   uint16_t dxfer_len, int timeout, int force48bit)
-{
-	CCB_CLEAR_ALL_EXCEPT_HDR(&ccb->ataio);
-	cam_fill_ataio(&ccb->ataio,
-		       retries,
-		       NULL,
-		       flags,
-		       tag_action,
-		       data_ptr,
-		       dxfer_len,
-		       timeout);
-
-	if (force48bit || lba > ATA_MAX_28BIT_LBA)
-		ata_48bit_cmd(&ccb->ataio, command, features, lba, sector_count);
-	else
-		ata_28bit_cmd(&ccb->ataio, command, features, lba, sector_count);
-
-	if (ata_flags & AP_FLAG_CHK_COND)
-		ccb->ataio.cmd.flags |= CAM_ATAIO_NEEDRESULT;
-
-	return ata_cam_send(device, ccb);
-}
 
 int
-ata_identify(DRIVE *dp,
-	     char **vendor,
-	     char **model,
-	     char **revision,
-	     int *have_selftest) {
+drive_ata_identify(DRIVE *dp) {
     struct cam_device *cdb = dp->cam;
     union ccb *ccb;
     struct ata_params apb;
@@ -388,25 +471,14 @@ ata_identify(DRIVE *dp,
     retry_command = ATA_ATAPI_IDENTIFY;
     
  retry:
-    error = ata_do_cmd(cdb,
-		       ccb,
-		       1, /*retries*/
-		       CAM_DIR_IN, /*flags*/
-		       AP_PROTO_PIO_IN, /*protocol*/
-		       AP_FLAG_BYT_BLOK_BLOCKS | AP_FLAG_TLEN_SECT_CNT, /*ata_flags*/
-#if 0
-		       MSG_SIMPLE_Q_TAG, /*tag_action*/
-#else
-		       CAM_TAG_ACTION_NONE,
-#endif
-		       command, /*command*/
-		       0, /*features*/
-		       0, /*lba*/
-		       sizeof(struct ata_params) / 512, /*sector_count*/
-		       (uint8_t *)&apb, /*data_ptr*/
-		       sizeof(apb), /*dxfer_len*/
-		       30000, /* timeout */
-		       0 /*force48bit*/);
+    { ssize_t res;
+	
+	res = drive_ata_command(dp, command, 0, 0, (uint8_t *) &apb, sizeof(apb));
+	if (res <= 0)
+	    error = 1;
+	else
+	    error = 0;
+    }
     
     if (error != 0) {
 	if (retry_command != 0) {
@@ -432,10 +504,63 @@ ata_identify(DRIVE *dp,
     }
     
     cam_freeccb(ccb);
+
+    if (f_debug) {
+	fprintf(stderr, "\t%s IDENTIFY: model           = %.*s\n",
+		(command == ATA_ATA_IDENTIFY ? "ATA" : "ATAPI"),
+		(int) sizeof(apb.model), apb.model);
+	fprintf(stderr, "\t%s IDENTIFY: revision        = %.*s\n",
+		(command == ATA_ATA_IDENTIFY ? "ATA" : "ATAPI"),
+		(int) sizeof(apb.revision), apb.revision);
+	fprintf(stderr, "\t%s IDENTIFY: tcg             = 0x%04x\n",
+		(command == ATA_ATA_IDENTIFY ? "ATA" : "ATAPI"),
+		apb.tcg);
+	fprintf(stderr, "\t%s IDENTIFY: capabilities1   = 0x%04x\n",
+		(command == ATA_ATA_IDENTIFY ? "ATA" : "ATAPI"),
+		apb.capabilities1);
+	fprintf(stderr, "\t%s IDENTIFY: capabilities2   = 0x%04x\n",
+		(command == ATA_ATA_IDENTIFY ? "ATA" : "ATAPI"),
+		apb.capabilities2);
+	fprintf(stderr, "\t%s IDENTIFY: multi           = 0x%04x\n",
+		(command == ATA_ATA_IDENTIFY ? "ATA" : "ATAPI"),
+		apb.multi);
+	fprintf(stderr, "\t%s IDENTIFY: mwdmamodes      = 0x%04x\n",
+		(command == ATA_ATA_IDENTIFY ? "ATA" : "ATAPI"),
+		apb.mwdmamodes);
+	fprintf(stderr, "\t%s IDENTIFY: version_major   = 0x%04x\n",
+		(command == ATA_ATA_IDENTIFY ? "ATA" : "ATAPI"),
+		apb.version_major);
+	fprintf(stderr, "\t%s IDENTIFY: version_minor   = 0x%04x\n",
+		(command == ATA_ATA_IDENTIFY ? "ATA" : "ATAPI"),
+		apb.version_minor);
+	fprintf(stderr, "\t%s IDENTIFY: mwdmamodes      = 0x%04x\n",
+		(command == ATA_ATA_IDENTIFY ? "ATA" : "ATAPI"),
+		apb.mwdmamodes);
+	fprintf(stderr, "\t%s IDENTIFY: extension       = 0x%04x :%s%s\n",
+		(command == ATA_ATA_IDENTIFY ? "ATA" : "ATAPI"),
+		apb.enabled.extension,
+		((apb.enabled.extension & ATA_SUPPORT_SMARTLOG) ? " SMARTLOG" : ""),
+		((apb.enabled.extension & ATA_SUPPORT_SMARTTEST) ? " SMARTTEST" : ""));
+
+	if (apb.atavalid & ATA_FLAG_64_70) {
+	    fprintf(stderr, "\t%s IDENTIFY: apiomodes       = 0x%04x\n",
+		    (command == ATA_ATA_IDENTIFY ? "ATA" : "ATAPI"),
+		    apb.apiomodes);
+	}
+	fprintf(stderr, "\t%s IDENTIFY: satacapabilities  = 0x%04x (%s)\n",
+		(command == ATA_ATA_IDENTIFY ? "ATA" : "ATAPI"),
+		apb.satacapabilities, ata_cap_gen2str(apb.satacapabilities));
+	fprintf(stderr, "\t%s IDENTIFY: satacapabilities2 = 0x%04x\n",
+		(command == ATA_ATA_IDENTIFY ? "ATA" : "ATAPI"),
+		apb.satacapabilities2);
+    }
     
-    *vendor = strdup("ATA");
-    *model = strndup((char *) apb.model, sizeof(apb.model));
-    *revision = strndup((char *) apb.revision, sizeof(apb.revision));
+    dp->vendor  = strdup("ATA");
+    dp->product = strndup((char *) apb.model, sizeof(apb.model));
+    dp->version = strndup((char *) apb.revision, sizeof(apb.revision));
+
+    dp->flags.have_smart = (apb.enabled.extension & ATA_SUPPORT_SMARTLOG) != 0;
+    dp->flags.have_selftest = (apb.enabled.extension & ATA_SUPPORT_SMARTTEST) != 0;
     
     return 0;
 }
@@ -451,7 +576,7 @@ ata_identify(DRIVE *dp,
  *     LBA mid = 0xf4, LBA high = 0x2c: threshold exceeded
  */
 int
-ata_smart_status(DRIVE *dp) {
+drive_ata_smart_status(DRIVE *dp) {
     struct cam_device *dev = dp->cam;
     union ccb *ccb;
     uint32_t cam_status;
@@ -565,123 +690,67 @@ ata_smart_status(DRIVE *dp) {
 }
 
 
-static enum drive_selftest_status
-classify_ata_selftest(uint8_t status)
-{
-    switch (status) {
-    case 0x0:
-        return (DRIVE_SELFTEST_PASSED);
 
-    case 0x1:
-    case 0x2:
-        return (DRIVE_SELFTEST_ABORTED);
+int
+drive_ata_smart_log_directory(DRIVE *dp) {
+    struct ata_smart_log_directory dir;
+    ssize_t res;
+    
 
-    case 0x3:
-    case 0x4:
-    case 0x5:
-    case 0x6:
-    case 0x7:
-    case 0x8:
-        return (DRIVE_SELFTEST_FAILED);
-
-    case 0xf:
-        return (DRIVE_SELFTEST_RUNNING);
-
-    default:
-        return (DRIVE_SELFTEST_UNKNOWN);
+    res = drive_ata_command(dp, ATA_CMD_SMART,
+			    ATA_SMART_READ_LOG,
+			    ATA_SMART_LOG_DIRECTORY_LBA,
+			    &dir,
+			    sizeof(dir));
+    if (res < 0) {
+        return (-1);
     }
+
+    if (f_debug) {
+	int i;
+	fprintf(stderr, "\tSMART LOG DIRECTORY: version = %u\n", get_le16((uint8_t *) &dir.version));
+	for (i = 0; i < 255; i++) {
+	    uint16_t ns = get_le16((uint8_t *) &dir.sectors[i]);
+	    if (ns != 0)
+		fprintf(stderr, "\tSMART LOG DIRECTORY: log 0x%02x = %u sectors\n", i+1, ns);
+	}
+    }	    
+
+    return 0;
 }
+
+
 
 /*
  * Read the most recent ATA SMART self-test result from an ada device.
  */
+ssize_t
+drive_ata_get_smart_log(DRIVE *dp,
+			uint8_t *buf,
+			size_t bufsize) {
+    memset(buf, 0, bufsize);
+    return drive_ata_command(dp, ATA_CMD_SMART,
+			    ATA_SMART_READ_LOG,
+			    ATA_SMART_SELF_TEST_LOG_LBA,
+			    buf,
+			    bufsize);
+}
+
+
 int
-ata_selftest_status(DRIVE *dp) {
+drive_ata_parse_smart_log(DRIVE *dp,
+			  uint8_t *buf,
+			  size_t bufsize) {
     struct cam_device *dev = dp->cam;
-    union ccb *ccb;
-    uint8_t buffer[ATA_SMART_LOG_SIZE];
     uint8_t index;
     uint8_t status_byte;
     uint8_t status;
-    uint32_t cam_status;
     size_t entry_offset;
-    int saved_errno;
     uint64_t poh;
+    int i = 0;
     
 
-    if (!dev || !dp) {
-        errno = EINVAL;
-        return (-1);
-    }
-
-    ccb = cam_getccb(dev);
-    if (ccb == NULL) {
-        errno = ENOMEM;
-        return (-1);
-    }
-
-    cam_fill_ataio(&ccb->ataio,
-		   1,
-		   NULL,
-		   CAM_DIR_IN | CAM_DEV_QFRZDIS,
-		   CAM_TAG_ACTION_NONE,
-		   buffer,
-		   sizeof(buffer),
-		   5000);
-
-    /*
-     * SMART READ LOG:
-     *
-     * command       = 0xb0
-     * feature       = 0xd5
-     * sector count  = 1
-     * LBA low       = log address 0x06
-     * LBA mid       = 0x4f
-     * LBA high      = 0xc2
-     */
-    ata_28bit_cmd(&ccb->ataio,
-		  ATA_CMD_SMART,
-		  ATA_SMART_READ_LOG,
-		  ATA_SMART_READ_LOG_LBA,
-		  1);
-    
-    if (cam_send_ccb(dev, ccb) < 0) {
-        saved_errno = errno != 0 ? errno : EIO;
-        cam_freeccb(ccb);
-        errno = saved_errno;
-        return (-1);
-    }
-
-    cam_status = ccb->ccb_h.status & CAM_STATUS_MASK;
-
-    if (cam_status != CAM_REQ_CMP) {
-        fprintf(stderr,
-            "%s%u: ATA SMART READ LOG failed: CAM status 0x%x\n",
-            dev->given_dev_name,
-            dev->given_unit_number,
-            cam_status);
-
-        cam_freeccb(ccb);
-        errno = EIO;
-        return (-1);
-    }
-
-    if (ccb->ataio.resid != 0) {
-        fprintf(stderr,
-            "%s%u: incomplete ATA self-test log transfer, "
-            "residual=%u\n",
-            dev->given_dev_name,
-            dev->given_unit_number,
-            ccb->ataio.resid);
-
-        cam_freeccb(ccb);
-        errno = EIO;
-        return (-1);
-    }
-
-    cam_freeccb(ccb);
-
-    if (!ata_smart_checksum_valid(buffer, sizeof(buffer))) {
+    if (!ata_smart_checksum_valid(buf, bufsize)) {
         fprintf(stderr,
             "%s%u: ATA SMART self-test log checksum failed\n",
             dev->given_dev_name,
@@ -695,14 +764,17 @@ ata_selftest_status(DRIVE *dp) {
      * Byte 508 contains the index of the most recently written
      * descriptor. Valid values are 1 through 21.
      */
-    index = buffer[ATA_SELF_TEST_INDEX_OFFSET];
+    index = buf[ATA_SMART_SELF_TEST_INDEX_OFFSET];
 
+    if (f_debug)
+	fprintf(stderr, "\tATA SELFTEST: most recent index = %u\n", index);
+    
     if (index == 0) {
         dp->raw.selftest.status = DRIVE_SELFTEST_NONE;
         return (0);
     }
 
-    if (index > ATA_SELF_TEST_ENTRY_COUNT) {
+    if (index > ATA_SMART_SELF_TEST_ENTRY_COUNT) {
         fprintf(stderr,
             "%s%u: invalid ATA self-test descriptor index %u\n",
             dev->given_dev_name,
@@ -713,8 +785,8 @@ ata_selftest_status(DRIVE *dp) {
         return (-1);
     }
 
-    entry_offset = ATA_SELF_TEST_ENTRY_OFFSET +
-        ((size_t)index - 1) * ATA_SELF_TEST_ENTRY_SIZE;
+    entry_offset = ATA_SMART_SELF_TEST_ENTRY_OFFSET +
+        ((size_t)index - 1) * ATA_SMART_SELF_TEST_ENTRY_SIZE;
 
     /*
      * Entry layout:
@@ -724,38 +796,105 @@ ata_selftest_status(DRIVE *dp) {
      * byte 2-3   lifetime hours, little-endian
      * byte 4-7   failing LBA, little-endian
      */
-     status_byte = buffer[entry_offset + 1];
+     status_byte = buf[entry_offset + 1];
      status = (status_byte >> 4) & 0x0f;
+ 
+     poh = get_le16(&buf[entry_offset + 2]);
+     if (dp->raw.last_self_test == DRIVE_NO_HOURS || poh > dp->raw.last_self_test)
+	 dp->raw.last_self_test = poh;
      
-     dp->raw.selftest.status = classify_ata_selftest(status);
-     
-     poh = get_le16(&buffer[entry_offset + 2]);
-     if (poh > dp->raw.power_on_hours)
+     if (f_debug) {
+	 uint16_t rev = get_le16(buf);
+	 fprintf(stderr, "\tATA SELFTEST revision       = %d\n", rev);
+	 fprintf(stderr, "\tATA SELFTEST last_self_test = %lu\n", poh);
+     }
+
+#if 0     
+     /* Get the hours from the latest selftest if we don't have anything else */
+     if (dp->raw.power_on_hours == DRIVE_NO_HOURS || poh > dp->raw.power_on_hours)
 	 dp->raw.power_on_hours = poh;
+#endif
+     
+     /* Get the status from the latest test */
+     dp->raw.selftest.status = classify_ata_selftest(status);
+
+     for (i = 0; i < ATA_SMART_SELF_TEST_ENTRY_COUNT; i++) {
+	 off_t off = ATA_SMART_SELF_TEST_ENTRY_OFFSET + i*ATA_SMART_SELF_TEST_ENTRY_SIZE;
+	 
+	 uint8_t status = (buf[off+1] >> 4) & 0x0f;
+	 uint8_t remain = (buf[off+1] & 0xF)*10;
+	 uint16_t hours = get_le16(&buf[off+2]);
+
+	 
+	 dp->raw.selftest.tests++;
+	 switch (classify_ata_selftest(status)) {
+	 case DRIVE_SELFTEST_PASSED:
+	     dp->raw.selftest.passed++;
+	     break;
+	 case DRIVE_SELFTEST_FAILED:
+	     dp->raw.selftest.failed++;
+	     break;
+	 case DRIVE_SELFTEST_ABORTED:
+	     dp->raw.selftest.aborted++;
+	     break;
+	 case DRIVE_SELFTEST_RUNNING:
+	     dp->raw.selftest.running++;
+	     break;
+	 case DRIVE_SELFTEST_UNKNOWN:
+	 case DRIVE_SELFTEST_NONE:
+	     break;
+	 }
+     
+	 if (f_debug) {
+	     fprintf(stderr, "\tATA SELFTEST %2d : %5u : %u : %-35s : %-35s : %u %%\n",
+		     i+1,
+		     hours,
+		     buf[off+0],
+		     ata_selftest_type2str(buf[off+0]),
+		     ata_selftest_status2str(status),
+		     remain);
+	 }
+     }
      
      return 1;
 }
 
+ssize_t
+drive_ata_smart_log(DRIVE *dp) {
+    uint8_t buffer[ATA_SMART_LOG_SIZE];
+    ssize_t res;
+
+    res = drive_ata_get_smart_log(dp, buffer, sizeof(buffer));
+    if (res < 0)
+	return res;
+
+    return drive_ata_parse_smart_log(dp, buffer, res);
+}
+    
+
 
 int
-ata_health_status(DRIVE *dp) {
+drive_ata_health_status(DRIVE *dp) {
     int rc1 = 0, rc2 = 0, rc3 = 0;
 
 
-    if (f_debug)
-	fprintf(stderr, "  [temp]\n");
-    rc1 = ata_drive_temperature(dp);
-    if (rc1 < 0)
-	return rc1;
-    
-    if (f_debug)
-	fprintf(stderr, "  [smart]\n");
-    rc2 = ata_smart_status(dp);
+    if (dp->flags.have_smart) {
+	if (f_debug)
+	    fprintf(stderr, "  [temp]\n");
+	rc1 = drive_ata_smart_data(dp);
+	if (rc1 < 0)
+	    return rc1;
+	
+	if (f_debug)
+	    fprintf(stderr, "  [smart]\n");
+	rc2 = drive_ata_smart_status(dp);
+    }
 
     if (dp->flags.have_selftest) {
 	if (f_debug)
 	    fprintf(stderr, "  [selftest]\n");
-	rc3 = ata_selftest_status(dp);
+	drive_ata_smart_log_directory(dp);
+	rc3 = drive_ata_smart_log(dp);
     }
 
     if (rc1 > 0 || rc2 > 0 || rc3 > 0)

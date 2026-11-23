@@ -37,27 +37,31 @@
 #include "drive.h"
 
 extern int
-ata_identify(DRIVE *dp,
-	     char **vendor,
-	     char **model,
-	     char **revision,
-	     int *have_selftest);
+drive_ata_identify(DRIVE *dp);
 
+extern int
+drive_ata_smart_status(DRIVE *dp);
 
+extern int
+drive_ata_smart_data(DRIVE *dp);
 
 
 extern int
-ata_drive_temperature(DRIVE *dp);
+drive_ata_parse_smart_data(DRIVE *dp,
+			   uint8_t *buf,
+			   size_t bufsize);
 
 extern int
-ata_smart_status(DRIVE *dp);
+drive_ata_parse_smart_log(DRIVE *dp,
+			  uint8_t *buf,
+			  size_t bufsize);
 
 
 extern int
-ata_tests_status(DRIVE *dp);
+drive_ata_tests_status(DRIVE *dp);
 
 
 extern int
-ata_health_status(DRIVE *dp);
+drive_ata_health_status(DRIVE *dp);
 
 #endif

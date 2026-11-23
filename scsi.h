@@ -41,6 +41,30 @@
 #include "drive.h"
 
 
+extern ssize_t
+drive_scsi_inquiry(DRIVE *dp,
+		   uint8_t page_code,
+		   void *buf,
+		   size_t bufsize);
+
+extern int
+drive_scsi_has_vpd_page(DRIVE *dp,
+			uint8_t page_id);
+
+extern ssize_t
+drive_scsi_log_sense(DRIVE *dp,
+		     uint8_t page,
+		     uint8_t subpage,
+		     uint8_t *buf,
+		     size_t bufsize);
+
+#if 0
+extern int
+drive_scsi_supported_log_pages(DRIVE *dp,
+			       struct supported_log_pages *pages);
+#endif
+
+
 extern int
 drive_scsi_temperature(DRIVE *dp);
 
@@ -51,9 +75,19 @@ extern int
 drive_scsi_selftest_results_status(DRIVE *dp);
 
 extern int
-drive_scsi_health_status(DRIVE *dp);
+drive_scsi_start_stop_cycle(DRIVE *dp);
+
+extern int
+drive_scsi_format_status_poweron(DRIVE *dp);
+
+extern int
+drive_scsi_endurance_used(DRIVE *dp);
 
 extern int
 drive_scsi_is_satl(DRIVE *dp);
+
+
+extern int
+drive_scsi_health_status(DRIVE *dp);
 
 #endif

@@ -69,10 +69,12 @@ enum drive_selftest_status {
 
 
 typedef struct {
-    struct {
-	unsigned int have_selftest;
-    } flags;
     struct cam_device *cam;
+    
+    struct {
+	unsigned int have_smart : 1;
+	unsigned int have_selftest : 1;
+    } flags;
     
     /* Printable information */
     char *ident;     /* Unique ID (serial number) */
@@ -107,6 +109,7 @@ typedef struct {
 	    uint16_t aborted;
 	} selftest;
 	uint64_t power_on_hours;
+	uint64_t last_self_test;
 	uint16_t endurance_used;
 	uint16_t temperature;
         struct {
@@ -120,7 +123,7 @@ typedef struct {
 
 #define DRIVE_NO_TEMPERATURE    0xffff
 #define DRIVE_NO_ENDURANCE_USED 0xffff
-#define DRIVE_NO_POWER_ON_HOURS 0xffffffffffffffff
+#define DRIVE_NO_HOURS          0xffffffffffffffff
 
 extern DRIVE *dv;
 extern int dc;

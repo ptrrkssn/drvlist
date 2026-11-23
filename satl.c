@@ -433,12 +433,17 @@ out:
 	if (dp->product)
 	    free(dp->product);
 	dp->product = strdup(model);
-	if (dp->ident)
-	    free(dp->ident);
-	dp->ident = strdup(serial);
 	if (dp->version)
 	    free(dp->version);
 	dp->version = strdup(firmware);
+
+	/*
+	 * We override and previously detected ident/serial since it might have
+	 * been truncated by the normal SATL SCSI emulation.
+	 */
+	if (dp->ident)
+	    free(dp->ident);
+	dp->ident = strdup(serial);
 	
 	if (f_debug)
 	    print_identify(identify, cdb_size);
