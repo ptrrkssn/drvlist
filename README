@@ -1,28 +1,37 @@
 # drvlist
 
-A small FreeBSD tool to enumerate installed drives in a system
+A FreeBSD tool to enumerate installed drives in a system
 and display the most useful information in one go.
 
 Author: Peter Eriksson <pen@lysator.liu.se>
 
+
 Usage:
+    ./drvlist [<options>] [<dev-1> [.. <dev-N>]
 
-# ./drvlist [-h] [-v] [-p] [<device-1> [... <device-N>]]
+Options:
+    -h              Display usage information
+    -S <column>     Sort using column
+    -C <columns>    Columns to display
+    -W <width>      Force terminal width
+    -D <level>      Enable internal debugging
+    -F <separator>  Columns separator [ : ]
+    -r              Reverse sort order
+    -v              Enable (increase) verbose output
+    -m              Enable multipath support
 
+Notes:
+   Columns for '-C' is a comma separated list optionally
+   prefixed with '+' or '-' in order to add or remove columns
 
-Sample output:
+Columns:
+    NAME VENDOR PRODUCT VERSION IDENT SIZE TEMP SMART
+    TESTS HOURS WEAR MADE PROTO XPORT CTRL PATH
+    PHYS
 
-# ./drvlist -v
- # : VENDOR   : PRODUCT          : REV.     : IDENT                    : NAMES     : PATH                            
- 1 : ATA      : MK000240GWEZF    : HPGE     : 17491BE2C8F3             : ada0      : ahcich2 bus  0 target   0 lun  0
- 2 : HP       : MB012000JWDFD    : HPD2     : 5PGTSWAC                 : da0       : ciss0 bus 32 target  16 lun  0
- 3 : Kingston : DataTraveler 3.0 : PMAP     : 001A4D5D52A8B1C0F9607039 : da27      : umass-sim0 bus 0 target 0 lun 0
- 4 : WDC      : WUH721818AL5204  : C870     : 2JKLNMEB                 : da4       : mpr0 bus 0 target 4 lun 0
- 5 : WDC      : WUH721818AL5204  : C870     : 6TGTKYDC                 : da34,da10 : mpr1 bus 0 target 59 lun 0,mpr1 bus 0 target 16 lun 0
- 6 : PLDS     : DVD+-RW DH-16AES : DD1M     : 73P4GPLC0086S51RRA00     : cd0       : ahcich4 bus 0 target 0 lun 0
- 7 : HGST     : HUH721010AL4200  : LS21     : 7PJSZTNC                 : da0       : mpr0 bus 0 target 8 lun 0
- 8 : INTEL    : SSDPEDMW400G4    : 8EV10171 : CVCQ726400DK400AGN       : nda0      : nvme0 bus 0 target 0 lun 1
- 9 : INTEL    : SSDPEDMW400G4    : 8EV10171 : CVCQ72640068400AGN       : nvd0      : nvme0
-10 : ATA      : SSDSCKJB120G7R   : N201DL42 : PHDW724401MA150A         : ada1      : ahcich15 bus 0 target 0 lun 0
-11 : SEAGATE  : ST1800MM0159     : ST7B     : WBN00MZL                 : da74      : mpr1 bus 0 target 10 lun 0
+Version:
+    2.0 (Built: Nov 25 2026 12:47:52)
+
+Copyright:
+    2026 Peter Eriksson <pen@lysator.liu.se>
 

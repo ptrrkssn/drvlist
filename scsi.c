@@ -47,6 +47,8 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
+#include <ctype.h>
+#include <unistd.h>
 
 #include "utils.h"
 #include "scsi.h"
@@ -98,6 +100,17 @@ extern char *argv0;
  */
 #define SELFTEST_PARAMETER_TOTAL_LENGTH       20
 
+			    
+#if 0
+#define SVPD_SUPPORTED_VPD_PAGES   0x00
+#define SVPD_UNIT_SERIAL_NUMBER    0x80
+#define SVPD_DEVICE_IDENTIFICATION 0x83
+#define	SVPD_MODE_PAGE_POLICY	   0x87
+#define SVPD_ATA_INFORMATION       0x89
+#define SVPD_BLOCK_LIMITS          0xb0
+#define SVPD_LOGICAL_PROVISIONING  0xb2
+#endif
+
 
 struct log_sense_cdb {
     uint8_t opcode;
@@ -136,6 +149,57 @@ struct supported_log_pages {
     unsigned int start_stop_cycle : 1;
 };
 
+void
+p_buffer(FILE *fp,
+	 uint8_t *buffer,
+	 size_t bufsize) {
+    int i;
+    size_t p = 0;
+
+    if (isatty(fileno(fp))) {
+	fprintf(fp, "\t\t\033[1;4m%-4s :", "DATA");
+	for (i = 0; i < 16; i++) {
+	    if (i == 8)
+		putc(' ', fp);
+	    fprintf(fp, " %02x", i);
+	}
+	fprintf(fp, " :");
+	for (i = 0; i < 16; i++) {
+	    if (i == 8)
+		putc(' ', fp);
+	    fprintf(fp, " %01x", i);
+	}
+	fprintf(fp, "\n\033[0m");
+    }
+    
+    while (p < bufsize) {
+	fprintf(fp, "\t\t%04zx :", p);
+	for (i = 0; i < 16 && p+i < bufsize; i++) {
+	    if (i == 8)
+		putc(' ', fp);
+	    fprintf(fp, " %02x", buffer[p+i]);
+	}
+	for (; i < 16; i++) {
+	    if (i == 8)
+		putc(' ', fp);
+	    fprintf(fp, "   ");
+	}
+	fprintf(fp, " :");
+	for (i = 0; i < 16 && p+i < bufsize; i++) {
+	    if (i == 8)
+		putc(' ', fp);
+	    fprintf(fp, " %c", isprint(buffer[p+i]) ? buffer[p+i] : '_');
+	}
+	p += i;
+	for (; i < 16; i++) {
+	    if (i == 8)
+		putc(' ', fp);
+	    fprintf(fp, "  ");
+	}
+	putc('\n', fp);
+    }
+}
+
 
 static struct log_sense_parameter *
 get_next_parameter(uint8_t *buf,
@@ -172,15 +236,17 @@ is_invalid(uint8_t *data,
 }
 
 
+
 ssize_t
 drive_scsi_inquiry(DRIVE *dp,
-		   uint8_t page_code,
+		   uint16_t page,
 		   void *buf,
 		   size_t bufsize) {
     union ccb *ccb = NULL;
     uint32_t cam_status;
     size_t cam_resid;
-
+    uint8_t page_code = page & 0xff;
+    uint8_t evpd = (page >> 8) & 0xff;
     
     memset(buf, 0, bufsize);
 
@@ -188,13 +254,16 @@ drive_scsi_inquiry(DRIVE *dp,
     if (ccb == NULL)
 	return -1;
     
+    if (f_debug)
+	fprintf(stderr, "    [scsi_inquiry 0x%02x, evpd:0x%02x]\n", page_code, evpd);
+    
     scsi_inquiry(&ccb->csio,
 		 SCSI_RETRIES,
 		 NULL,
 		 CAM_TAG_ACTION_NONE,
 		 (uint8_t *) buf,
 		 bufsize,
-		 1,
+		 evpd,
 		 page_code,
 		 SSD_FULL_SIZE,
 		 SCSI_TIMEOUT);
@@ -204,6 +273,11 @@ drive_scsi_inquiry(DRIVE *dp,
     ccb->ccb_h.flags |= CAM_PASS_ERR_RECOVER;
     
     if (cam_send_ccb(dp->cam, ccb) < 0) {
+	if (f_debug)
+	    fprintf(stderr,
+		    "%s: Error: %s%u: INQUIRY 0x%02x Failed: cam_send_ccb: %s\n",
+		    argv0, dp->cam->given_dev_name, dp->cam->given_unit_number, page_code,
+		    strerror(errno));
 	cam_freeccb(ccb);
 	return -1;
     }
@@ -223,38 +297,149 @@ drive_scsi_inquiry(DRIVE *dp,
     }
     
     if (cam_resid > bufsize) {
+	if (f_debug)
+	    fprintf(stderr,
+		    "%s: Error: %s%u: INQUIRY 0x%02x Failed: cam_send_ccb: resid > bufsize\n",
+		    argv0, dp->cam->given_dev_name, dp->cam->given_unit_number, page_code);
 	errno = EIO;
 	return -1;
     }
 	
+    if (f_debug > 1)
+	p_buffer(stderr, buf, bufsize-cam_resid);
+    
     return bufsize - cam_resid;
+}
+
+
+int
+drive_scsi_get_inquiry(DRIVE *dp) {
+    uint8_t buffer[252];
+    ssize_t res;
+    
+
+    res = drive_scsi_inquiry(dp, 0, buffer, sizeof(buffer));
+    if (res < 0)
+	return res;
+
+    return 0;
+}
+
+
+int
+drive_scsi_get_vpd_page(DRIVE *dp,
+			uint8_t page_id,
+			uint8_t *buffer,
+			size_t bufsize) {
+    ssize_t res;
+    
+
+    return drive_scsi_inquiry(dp,
+			     page_id | INQUIRY_EVPD,
+			     buffer, bufsize);
+    if (res < 0)
+	return res;
+
+    return 0;
 }
 
 int
 drive_scsi_has_vpd_page(DRIVE *dp,
 			uint8_t page_id) {
-    struct scsi_vpd_supported_page_list sup_pages;
+    struct scsi_vpd_supported_page_list pages;
     int i;
     ssize_t res;
+    int rc = 0;
+    
 
+    if (f_debug)
+	fprintf(stderr, "  [scsi_inquiry_has_vpd_page 0x%02x]\n", page_id);
     
     res = drive_scsi_inquiry(dp,
-			     SVPD_SUPPORTED_PAGE_LIST,
-			     (uint8_t *) &sup_pages,
-			     sizeof(sup_pages));
+			     SVPD_SUPPORTED_PAGE_LIST | INQUIRY_EVPD,
+			     (uint8_t *) &pages,
+			     sizeof(pages));
     if (res < 0)
 	return res;
-    if (res != sizeof(sup_pages)) {
+
+    if (res < 4) {
+	fprintf(stderr, "%s: Error: %s%u: INQUIRY 0x%02x Invalid response [res=%zd length=%u]\n",
+		argv0, dp->cam->given_dev_name, dp->cam->given_unit_number,
+		SVPD_SUPPORTED_PAGE_LIST,
+		res, pages.length);
 	errno = EIO;
 	return -1;
     }
+
+    if (pages.length+4 < 4 || pages.length == 0)
+	res = pages.length;
+    else
+	res -= 4;
+
+    if (f_debug)
+	fprintf(stderr, "\tINQUIRY VPD PAGES: %ld (%d) Supported : ",
+		res, pages.length);
     
-    for (i = 0; i < sup_pages.length; i++) {
-	if (sup_pages.list[i] == page_id)
-	    return 1;
+    for (i = 0; i < res; i++) {
+	if (pages.list[i] == page_id)
+	    rc = 1;
+	if (f_debug)
+	    fprintf(stderr, " 0x%02x", pages.list[i]);
+    }
+    if (f_debug)
+	putc('\n', stderr);
+    
+    return rc;
+}
+
+
+
+int
+drive_scsi_dump_vpd_pages(DRIVE *dp) {
+    struct scsi_vpd_supported_page_list pages;
+    int i;
+    ssize_t res;
+    int rc = 0;
+    
+
+    fprintf(stderr, "  [scsi_dump_inquiry_vpd_pages]\n");
+    
+    res = drive_scsi_inquiry(dp,
+			     SVPD_SUPPORTED_PAGE_LIST | INQUIRY_EVPD,
+			     (uint8_t *) &pages,
+			     sizeof(pages));
+    if (res < 0)
+	return res;
+
+    if (res < 4) {
+	fprintf(stderr, "%s: Error: %s%u: INQUIRY 0x%02x Invalid response [res=%zd length=%u]\n",
+		argv0, dp->cam->given_dev_name, dp->cam->given_unit_number,
+		SVPD_SUPPORTED_PAGE_LIST,
+		res, pages.length);
+	errno = EIO;
+	return -1;
+    }
+
+    if (pages.length+4 < res)
+	res = pages.length;
+    else
+	res -= 4;
+    
+    fprintf(stderr, "\tINQUIRY VPD PAGES: %ld (%d) Supported : ",
+	    res, pages.length);
+    
+    for (i = 0; i < res; i++) {
+	fprintf(stderr, " 0x%02x", pages.list[i]);
+    }
+    putc('\n', stderr);
+
+    for (i = 0; i < res; i++) {
+	uint8_t buffer[252];
+	
+	(void) drive_scsi_get_vpd_page(dp, pages.list[i], buffer, sizeof(buffer));
     }
     
-    return 0;
+    return rc;
 }
 
 
@@ -275,6 +460,9 @@ drive_scsi_log_sense(DRIVE *dp,
     uint32_t cam_status;
     int saved_errno;
     
+
+    if (f_debug)
+	fprintf(stderr, "    [scsi_log_sense 0x%02x/0x%02x]\n", page, subpage);
 
     memset(buf, 0, bufsize);
 
@@ -387,6 +575,9 @@ drive_scsi_log_sense(DRIVE *dp,
 	errno = EINVAL;
 	return -1;
     }
+
+    if (f_debug > 1)
+	p_buffer(stderr, buf, len);
     
     return len;
 }
@@ -431,6 +622,9 @@ drive_scsi_supported_log_pages(DRIVE *dp,
     ssize_t len;
     off_t off;
 
+
+    if (f_debug)
+	fprintf(stderr, "  [scsi_supported_log_pages]\n");
     
     len = drive_scsi_log_sense(dp,
 			       SCSI_SUPPORTED_LOGS_PAGE,
@@ -1007,7 +1201,7 @@ background_scan_handler(uint16_t code,
 	    }
 	    
 	    if (f_debug) {
-		fprintf(stderr, "\tBACKGROUND SCAN: power_on_minutes          = %u (0x%08x) : %u h)\n", pom, pom, poh);
+		fprintf(stderr, "\tBACKGROUND SCAN: power_on_minutes          = %u (0x%08x, %u h)\n", pom, pom, poh);
 		fprintf(stderr, "\tBACKGROUND SCAN: scan_status               = 0x%02x\n", data[5]);
 		fprintf(stderr, "\tBACKGROUND SCAN: scans_performed           = %u\n", get_be16(data+6));
 		fprintf(stderr, "\tBACKGROUND SCAN: medium_scan_progress      = %u\n", get_be16(data+8));
@@ -1043,16 +1237,17 @@ drive_scsi_is_satl(DRIVE *dp) {
 
 
 
-
 int
 drive_scsi_health_status(DRIVE *dp) {
     int rc1 = 0, rc2 = 0, rc3 = 0, rc4 = 0, rc5 = 0, rc6 = 0;
     struct supported_log_pages pages;
 
 
-    if (f_debug)
-	fprintf(stderr, "  [supported]\n");
-
+    if (f_debug > 1) {
+	drive_scsi_get_inquiry(dp);
+	drive_scsi_dump_vpd_pages(dp);
+    }
+    
     memset(&pages, 0, sizeof(pages));
     drive_scsi_supported_log_pages(dp, &pages);
     

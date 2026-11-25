@@ -41,9 +41,11 @@
 #include "drive.h"
 
 
+#define INQUIRY_EVPD 0x0100
+
 extern ssize_t
 drive_scsi_inquiry(DRIVE *dp,
-		   uint8_t page_code,
+		   uint16_t page,
 		   void *buf,
 		   size_t bufsize);
 

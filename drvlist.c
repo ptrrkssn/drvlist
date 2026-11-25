@@ -66,6 +66,7 @@
 
 
 char *argv0 = "drvlist";
+char *version = "2.0";
 
 int f_verbose = 0;
 int f_debug = 0;
@@ -237,7 +238,7 @@ do_device(char *dname) {
     struct cam_device *cam;
     DRIVE *dp;
     char path[2048];
-    char idbuf[DISK_IDENT_SIZE];
+    char idbuf[DISK_IDENT_SIZE+1];
     char pnbuf[MAXPATHLEN];
     char drvbuf[MAXPATHLEN];
     char physbuf[MAXPATHLEN];
@@ -292,18 +293,6 @@ do_device(char *dname) {
     
     cam = cam_open_device(path, O_RDWR);
     if (cam) {
-	if (f_debug > 1) {
-	    fprintf(stderr, "*** CAM Device: path=%s serial=%*s dev=%s%u pass=%s%u sim=%s%u\n",
-		    path,
-		    cam->serial_num_len, cam->serial_num,
-		    cam->given_dev_name,
-		    cam->given_unit_number,
-		    cam->device_name,
-		    cam->dev_unit_num,
-		    cam->sim_name,
-		    cam->sim_unit_number);
-	}
-
 	sprintf(drvbuf, "%s%u:%u",
 		cam->sim_name, cam->sim_unit_number, cam->bus_id);
 
@@ -311,10 +300,10 @@ do_device(char *dname) {
 		cam->path_id,
 		cam->target_id,
 		cam->target_lun);
-	
+
 	/* Get device serial number */
 	ident = cam->serial_num_len > 0 ? strdupget((char *) &cam->serial_num[0], cam->serial_num_len) : NULL;
-	
+
 	if (ident && f_multipath) {
 	    /* Locate multipath alternate names */
 	    for (i = 0; i < dc && strcmp(dv[i].ident, ident); i++)
@@ -517,22 +506,24 @@ do_device(char *dname) {
 	return 0;
     } else {
 	/* Non-CAM device */
-
+	int res;
 	if (f_debug > 1)
 	    fprintf(stderr, "*** %s: Non-CAM Device\n", path);
 
 	memset(idbuf, 0, sizeof(idbuf));
-	if (ioctl(fd, DIOCGIDENT, idbuf) < 0) {
+	res = ioctl(fd, DIOCGIDENT, idbuf);
+	if (res < 0) {
 	    fprintf(stderr, "%s: Error: %s: ioctl(DIOCGIDENT): %s\n",
 		    argv0, path, strerror(errno));
 	    exit(1);
-	} else {
-	    ident = strdupget(idbuf, sizeof(idbuf));
-	    if (!ident) {
-		fprintf(stderr, "%s: Error: %s: Memory allocation: %s\n",
-			argv0, path, strerror(errno));
-		exit(1);
-	    }
+	}
+
+	fprintf(stderr, "DIOCGIDENT res=%d\n", res);
+	ident = strdupget(idbuf, sizeof(idbuf));
+	if (!ident) {
+	    fprintf(stderr, "%s: Error: %s: Memory allocation: %s\n",
+		    argv0, path, strerror(errno));
+	    exit(1);
 	}
 	
 	if (f_multipath) {
@@ -742,6 +733,43 @@ drive_sort(const void *a,
 }
 
 
+void
+usage(FILE *fp) {
+    int j;
+
+    
+    fprintf(fp, "Usage:\n");
+    fprintf(fp, "    %s [<options>] [<dev-1> [.. <dev-N>]\n", argv0);
+
+    fprintf(fp, "\nOptions:\n");
+    fprintf(fp, "    -h              Display usage information\n");
+    fprintf(fp, "    -S <column>     Sort using column\n");
+    fprintf(fp, "    -C <columns>    Columns to display\n");
+    fprintf(fp, "    -W <width>      Force terminal width\n");
+    fprintf(fp, "    -D <level>      Enable internal debugging\n");
+    fprintf(fp, "    -F <separator>  Columns separator [%s]\n", f_sep);
+    fprintf(fp, "    -r              Reverse sort order\n");
+    fprintf(fp, "    -v              Enable (increase) verbose output\n");
+    fprintf(fp, "    -m              Enable multipath support\n");
+
+    fprintf(fp, "\nNotes:\n");
+    fprintf(fp, "   Columns for '-C' is a comma separated list optionally\n");
+    fprintf(fp, "   prefixed with '+' or '-' in order to add or remove columns\n");
+    
+    fprintf(fp, "\nColumns:");
+    for (j = 0; j < NCOLUMNS; j++) {
+	if ((j & 7) == 0)
+	    fprintf(fp, "\n   ");
+	fprintf(fp, " %s", columns[j].name);
+    }
+    putc('\n', fp);
+    
+    fprintf(fp, "\nVersion:\n");
+    fprintf(fp, "    %s (Built: %s %s)\n", version, __DATE__, __TIME__);
+    
+    fprintf(fp, "\nCopyright:\n");
+    fprintf(fp, "    2026 Peter Eriksson <pen@lysator.liu.se>\n");
+}
 
 int
 main(int argc,
@@ -770,7 +798,7 @@ main(int argc,
 	for (j = 1; argv[i][j]; j++)
 	    switch (argv[i][j]) {
 	    case 'h':
-		printf("Usage: %s [-vpts] [-S<sort>] [-W<maxwidth>] [<devices>]\n", argv[0]);
+		usage(stdout);
 		exit(0);
 		
 	    case 'S':
@@ -879,22 +907,31 @@ main(int argc,
     NextArg:;
     }
 
-    if (f_verbose > 0) {
+    /* Auto mode, must check all data sources to get the total columns widths */
+    if (f_verbose == 1) {
+	for (j = 0; j < NCOLUMNS; j++) {
+	    column_set_flag(j+1, 1);
+	}
+    } else if (f_verbose > 1) {
 	f_temp++;
-	if (f_verbose > 1) {
+	if (f_verbose > 2) {
 	    f_smart++;
 	    f_tests++;
-	    if (f_verbose > 2) {
+	    if (f_verbose > 3) {
 		f_hours++;
-		if (f_verbose > 3) {
+		if (f_verbose > 4) {
 		    f_wear++;
 		    f_made++;
-		    if (f_verbose > 4) {
+		    if (f_verbose > 5) {
 			f_ctrl++;
-			if (f_verbose > 5) {
-			    f_path++;
-			    if (f_verbose > 6) {
-				f_phys++;
+			if (f_verbose > 6) {
+			    f_proto++;
+			    f_xport++;
+			    if (f_verbose > 7) {
+				f_path++;
+				if (f_verbose > 8) {
+				    f_phys++;
+				}
 			    }
 			}
 		    }
@@ -959,9 +996,6 @@ main(int argc,
 	    int w;
 	    char *cp;
 
-	    if (!*columns[j].flag)
-		continue;
-	    
 	    cp = * (char **) ((uint8_t *) &dv[i] + dfp->offset);
 
 	    w = (dfp->width >= 0 ? dfp->width : -dfp->width);
@@ -970,30 +1004,19 @@ main(int argc,
 	}
     }
 
-    c_width = 0;
-    for (j = 0; j < NCOLUMNS; j++) {
-	struct drive_column *dfp = &columns[j];
-	int w;
-	
-	if (!*columns[j].flag)
-	    continue;
-
-	w = dfp->width;
-	c_width += (w >= 0 ? w : -w)+seplen;
-    }
-    
     numlen = (int) (log10(dc)+1);
-    c_width += numlen;
-
+    c_width = numlen;
 
     int x_width = (f_width > 0 && f_width < t_width) ? f_width : t_width;
 
-    if (x_width > 0) {
-	for (j = NCOLUMNS; j > 0 && c_width > x_width; j--) {
-	    int w = columns[j-1].width;
-	    
-	    column_set_flag(j, 0);
-	    c_width -= (w >= 0 ? w : -w)+seplen;
+    /* Automatically select columns to show based on terminal width */
+    if (f_verbose == 1 && x_width > 0) {
+	for (j = 0; j < NCOLUMNS; j++) {
+	    int w = columns[j].width;
+
+	    c_width += (w >= 0 ? w : -w)+seplen;
+	    if (c_width > x_width)
+		column_set_flag(j+1, 0);
 	}
     }
     

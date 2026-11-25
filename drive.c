@@ -294,6 +294,8 @@ drive_classify(DRIVE *dp) {
     if (f_debug) {
 	fprintf(stderr, "\tpd_type              = %u (%s)\n",
 		dev->pd_type, drive_cam_devtype2str(dev->pd_type));
+	fprintf(stderr, "\tremovable            = %s\n",
+		SID_IS_REMOVABLE(&ccb->cgd.inq_data) ? "Yes" : "No");
 	fprintf(stderr, "\tdevice protocol      = %u (%s)\n",
 		d_protocol, drive_cam_proto2str(d_protocol));
 	fprintf(stderr, "\tdevice type          = %d (%s)\n",
@@ -336,10 +338,12 @@ drive_classify(DRIVE *dp) {
     case PROTO_SCSI:
 	if (DRIVE_IS_ATAPI(d_protocol, d_type, c_transport))
 	    dp->raw.proto = DRIVE_PROTO_ATAPI;
-	else if (d_type == T_DIRECT && c_transport == XPORT_USB) {
-	    dp->raw.proto = DRIVE_PROTO_SATL;
-	} else if (drive_scsi_is_satl(dp) == 1) {
-	    dp->raw.proto = DRIVE_PROTO_SATL;
+	else if (d_type == T_DIRECT &&
+		 (c_transport == XPORT_USB || c_transport == XPORT_SAS)) {
+	    if (drive_scsi_is_satl(dp) == 1)
+		dp->raw.proto = DRIVE_PROTO_SATL;
+	    else
+		dp->raw.proto = DRIVE_PROTO_SCSI;
 	} else 
 	    dp->raw.proto = DRIVE_PROTO_SCSI;
 	break;
@@ -359,8 +363,12 @@ drive_classify(DRIVE *dp) {
 	dp->raw.proto = DRIVE_PROTO_UNKNOWN;
     }
 
-    if (dp->raw.proto == DRIVE_PROTO_SATL)
-	satl_identify(dp);
+    if (dp->raw.proto == DRIVE_PROTO_SATL) {
+	int rc = satl_identify(dp);
+	if (rc < 0)
+	    dp->raw.proto = DRIVE_PROTO_SCSI;
+    }
+	
 
     cam_freeccb(ccb);
     return 1;
