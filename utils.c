@@ -169,6 +169,7 @@ size2str(size_t size) {
 
 /*
  * Duplicate a string, stripping leading and trailing spaces
+ * and nonprintable characters
  */
 char *
 strdupget(const char *s,
@@ -179,7 +180,7 @@ strdupget(const char *s,
 
     
     /* Skip leading spaces */
-    while (isspace(*s) && maxlen > 0) {
+    while (*s && (isspace(*s) || !isprint(*s)) && maxlen > 0) {
 	++s;
 	--maxlen;
     }
@@ -189,10 +190,14 @@ strdupget(const char *s,
     if (!r)
 	return NULL;
     
-    /* Strip trailing spaces */
+    /* Strip trailing spaces or nonprintable characters */
     for (i = strlen(r)-1; i >= 0 && (isspace(r[i]) || !isprint(r[i]) || r[i] == '_'); --i)
 	r[i] = '\0';
 
+    for (i = 0; r[i]; i++) {
+	if (!isprint(r[i]))
+	    r[i] = '_';
+    }
     return r;
 }
 

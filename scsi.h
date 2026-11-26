@@ -43,6 +43,14 @@
 
 #define INQUIRY_EVPD 0x0100
 
+extern int
+drive_scsi_parse_inquiry(DRIVE *dp,
+			 uint8_t *buffer,
+			 size_t bufsize);
+
+extern const char *
+scsi_inquiry_version2str(uint8_t version);
+
 extern ssize_t
 drive_scsi_inquiry(DRIVE *dp,
 		   uint16_t page,

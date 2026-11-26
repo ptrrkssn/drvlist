@@ -45,6 +45,7 @@ nvme_identify_fd(int fd,
 		 char **revision,
 		 char **serial,
 		 char **phys,
+		 char **proto,
 		 int *have_selftest);
 
 extern int

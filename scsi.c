@@ -52,6 +52,7 @@
 
 #include "utils.h"
 #include "scsi.h"
+#include "ata.h"
 
 extern int f_debug;
 extern int f_temp;
@@ -248,6 +249,7 @@ drive_scsi_inquiry(DRIVE *dp,
     uint8_t page_code = page & 0xff;
     uint8_t evpd = (page >> 8) & 0xff;
     
+
     memset(buf, 0, bufsize);
 
     ccb = cam_getccb(dp->cam);
@@ -302,15 +304,70 @@ drive_scsi_inquiry(DRIVE *dp,
 		    "%s: Error: %s%u: INQUIRY 0x%02x Failed: cam_send_ccb: resid > bufsize\n",
 		    argv0, dp->cam->given_dev_name, dp->cam->given_unit_number, page_code);
 	errno = EIO;
+
+
 	return -1;
     }
 	
-    if (f_debug > 1)
-	p_buffer(stderr, buf, bufsize-cam_resid);
-    
     return bufsize - cam_resid;
 }
 
+
+const char *
+scsi_inquiry_version2str(uint8_t version) {
+    static char buf[64];
+    
+    switch (version) {
+    case 0x00:
+	return "-";
+    case 0x01:
+	return "CCS";
+    case 0x02:
+	return "SCSI-2";
+    case 0x03:
+	return "SPC-1";
+    case 0x04:
+	return "SPC-2";
+    case 0x05:
+	return "SPC-3";
+    case 0x06:
+	return "SPC-4";
+    case 0x07:
+	return "SPC-5";
+    case 0x08:
+	return "SPC-6";
+    default:
+	sprintf(buf, "SPC-%u?", version-2);
+	return buf;
+    }
+}
+
+int
+drive_scsi_parse_inquiry(DRIVE *dp,
+			 uint8_t *buffer,
+			 size_t bufsize) {
+    struct scsi_inquiry_data *inq = (struct scsi_inquiry_data *) buffer;
+
+    
+    if (f_debug) {
+	fprintf(stderr, "\tSCSI INQUIRY: removable   = %s\n",  SID_IS_REMOVABLE(inq) ? "Yes" : "No");
+	fprintf(stderr, "\tSCSI INQUIRY: ansi_rev    = %d (%s)\n",  SID_ANSI_REV(inq),
+		scsi_inquiry_version2str(SID_ANSI_REV(inq)));
+
+	if (bufsize >= 8)
+	    fprintf(stderr, "\tSCSI INQUIRY: vendor      = %.*s\n", (int) sizeof(inq->vendor), inq->vendor);
+	if (bufsize >= 16)
+	    fprintf(stderr, "\tSCSI INQUIRY: product     = %.*s\n", (int) sizeof(inq->product), inq->product);
+	if (bufsize >= 32)
+	    fprintf(stderr, "\tSCSI INQUIRY: revision    = %.*s\n", (int) sizeof(inq->revision), inq->revision);
+	if (bufsize >= 36)
+	    fprintf(stderr, "\tSCSI INQUIRY: vendor      = %.*s\n", (int) (bufsize-36 < 20 ? bufsize-36 : 20), buffer+36);
+	if (f_debug > 1)
+	    p_buffer(stderr, buffer, bufsize);
+    }
+    
+    return 0;
+}
 
 int
 drive_scsi_get_inquiry(DRIVE *dp) {
@@ -322,6 +379,7 @@ drive_scsi_get_inquiry(DRIVE *dp) {
     if (res < 0)
 	return res;
 
+    drive_scsi_parse_inquiry(dp, buffer, res);
     return 0;
 }
 
@@ -350,6 +408,7 @@ drive_scsi_has_vpd_page(DRIVE *dp,
     int i;
     ssize_t res;
     int rc = 0;
+    int npages;
     
 
     if (f_debug)
@@ -371,16 +430,16 @@ drive_scsi_has_vpd_page(DRIVE *dp,
 	return -1;
     }
 
-    if (pages.length+4 < 4 || pages.length == 0)
-	res = pages.length;
+    if (pages.length+4 < res)
+	npages = pages.length;
     else
-	res -= 4;
+	npages = res-4;
 
     if (f_debug)
-	fprintf(stderr, "\tINQUIRY VPD PAGES: %ld (%d) Supported : ",
-		res, pages.length);
+	fprintf(stderr, "\tINQUIRY VPD PAGES: %d (%d) Supported : ",
+		npages, pages.length);
     
-    for (i = 0; i < res; i++) {
+    for (i = 0; i < npages; i++) {
 	if (pages.list[i] == page_id)
 	    rc = 1;
 	if (f_debug)
@@ -391,6 +450,35 @@ drive_scsi_has_vpd_page(DRIVE *dp,
     
     return rc;
 }
+
+
+struct scsi_vpd_sat_ata_information {
+    uint8_t device;
+    uint8_t page_code; /* 0x89 */
+    uint8_t length[2];
+    uint8_t reserved1[4];
+    uint8_t sat_vendor[8];
+    uint8_t sat_product[16];
+    uint8_t sat_revision[4];
+    uint8_t ata_device_signature[20];
+    uint8_t ata_command_code;
+    uint8_t reserved2[3];
+    uint8_t ata_identify_data[512];
+};
+
+int
+drive_scsi_parse_vpd_sat_ata_information(DRIVE *dp,
+					 struct scsi_vpd_sat_ata_information *satinfo) {
+    fprintf(stderr, "\tVPD SAT ATA INFO: sat vendor    = %.8s\n",  satinfo->sat_vendor);
+    fprintf(stderr, "\tVPD SAT ATA INFO: sat product   = %.16s\n", satinfo->sat_product);
+    fprintf(stderr, "\tVPD SAT ATA INFO: sat revision  = %.4s\n",  satinfo->sat_revision);
+    fprintf(stderr, "\tVPD SAT ATA INFO: ata interface = %s\n",    satinfo->ata_device_signature[0] == 0x34 ? "SATA" : "PATA");
+    fprintf(stderr, "\tVPD SAT ATA INFO: ata protocol  = %s\n",    satinfo->ata_command_code == 0xec ? "ATA" : "ATAPI");
+
+    drive_ata_parse_identify(dp, (struct ata_params *) &satinfo->ata_identify_data);
+    return 0;
+}
+					 
 
 
 
@@ -434,9 +522,15 @@ drive_scsi_dump_vpd_pages(DRIVE *dp) {
     putc('\n', stderr);
 
     for (i = 0; i < res; i++) {
-	uint8_t buffer[252];
+	uint8_t buffer[568];
+	ssize_t res;
 	
-	(void) drive_scsi_get_vpd_page(dp, pages.list[i], buffer, sizeof(buffer));
+	res = drive_scsi_get_vpd_page(dp, pages.list[i], buffer, pages.list[i] == 0x89 ? sizeof(buffer) : 252);
+	if (res > 0) {
+	    if (pages.list[i] == 0x89)
+		drive_scsi_parse_vpd_sat_ata_information(dp, (struct scsi_vpd_sat_ata_information *) &buffer);
+	    p_buffer(stderr, buffer, res);
+	}
     }
     
     return rc;

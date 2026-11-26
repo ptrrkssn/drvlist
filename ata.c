@@ -138,11 +138,11 @@ classify_ata_selftest(uint8_t status)
 static const char *
 ata_cap_gen2str(uint16_t cap) {
     if (cap & ATA_SATA_GEN3)
-	return "SATA III";
+	return "SATA-3";
     else if (cap & ATA_SATA_GEN2)
-	return "SATA II";
+	return "SATA-2";
     else if (cap & ATA_SATA_GEN1)
-	return "SATA I";
+	return "SATA-1";
     else
 	return "?";
 }
@@ -370,7 +370,7 @@ drive_ata_get_smart_data(DRIVE *dp,
 int
 drive_ata_parse_smart_data(DRIVE *dp,
 			   uint8_t *buf,
-			   size_t bufsize) {
+			   size_t bufsize) { 
     uint16_t fallback_temperature;
     size_t offset, i;
     int have_fallback;
@@ -450,6 +450,63 @@ drive_ata_smart_data(DRIVE *dp) {
     
 
 
+
+int
+drive_ata_parse_identify(DRIVE *dp,
+			struct ata_params *app) {
+
+    ata_param_fixup(app);
+    
+    if (f_debug) {
+	fprintf(stderr, "\tATA IDENTIFY: model           = %.*s\n",
+		(int) sizeof(app->model), app->model);
+	fprintf(stderr, "\tATA IDENTIFY: revision        = %.*s\n",
+		(int) sizeof(app->revision), app->revision);
+	fprintf(stderr, "\tATA IDENTIFY: serial          = %.*s\n",
+		(int) sizeof(app->serial), app->serial);
+	fprintf(stderr, "\tATA IDENTIFY: tcg             = 0x%04x\n",
+		app->tcg);
+	fprintf(stderr, "\tATA IDENTIFY: capabilities1   = 0x%04x\n",
+		app->capabilities1);
+	fprintf(stderr, "\tATA IDENTIFY: capabilities2   = 0x%04x\n",
+		app->capabilities2);
+	fprintf(stderr, "\tATA IDENTIFY: multi           = 0x%04x\n",
+		app->multi);
+	fprintf(stderr, "\tATA IDENTIFY: mwdmamodes      = 0x%04x\n",
+		app->mwdmamodes);
+	fprintf(stderr, "\tATA IDENTIFY: version_major   = 0x%04x\n",
+		app->version_major);
+	fprintf(stderr, "\tATA IDENTIFY: version_minor   = 0x%04x\n",
+		app->version_minor);
+	fprintf(stderr, "\tATA IDENTIFY: mwdmamodes      = 0x%04x\n",
+		app->mwdmamodes);
+	fprintf(stderr, "\tATA IDENTIFY: extension       = 0x%04x :%s%s\n",
+		app->enabled.extension,
+		((app->enabled.extension & ATA_SUPPORT_SMARTLOG) ? " SMARTLOG" : ""),
+		((app->enabled.extension & ATA_SUPPORT_SMARTTEST) ? " SMARTTEST" : ""));
+
+	if (app->atavalid & ATA_FLAG_64_70) {
+	    fprintf(stderr, "\tATA IDENTIFY: apiomodes       = 0x%04x\n",
+		    app->apiomodes);
+	}
+	fprintf(stderr, "\tATA IDENTIFY: satacapabilities  = 0x%04x (%s)\n",
+		app->satacapabilities, ata_cap_gen2str(app->satacapabilities));
+	fprintf(stderr, "\tATA IDENTIFY: satacapabilities2 = 0x%04x\n",
+		app->satacapabilities2);
+    }
+    
+    dp->vendor  = strdup("ATA");
+    dp->product = strndup((char *) app->model,    sizeof(app->model));
+    dp->version = strndup((char *) app->revision, sizeof(app->revision));
+
+    dp->proto = strdup(ata_cap_gen2str(app->satacapabilities));
+    
+    dp->flags.have_smart = (app->enabled.extension & ATA_SUPPORT_SMARTLOG) != 0;
+    dp->flags.have_selftest = (app->enabled.extension & ATA_SUPPORT_SMARTTEST) != 0;
+
+    return 0;
+}
+
 int
 drive_ata_identify(DRIVE *dp) {
     struct cam_device *cdb = dp->cam;
@@ -489,7 +546,6 @@ drive_ata_identify(DRIVE *dp) {
 	return (1);
     }
     
-    ata_param_fixup(&apb);
     
     error = 1;
     bp = (uint8_t *) &apb;
@@ -505,6 +561,9 @@ drive_ata_identify(DRIVE *dp) {
     
     cam_freeccb(ccb);
 
+    drive_ata_parse_identify(dp, &apb);
+
+#if 0
     if (f_debug) {
 	fprintf(stderr, "\t%s IDENTIFY: model           = %.*s\n",
 		(command == ATA_ATA_IDENTIFY ? "ATA" : "ATAPI"),
@@ -561,6 +620,7 @@ drive_ata_identify(DRIVE *dp) {
 
     dp->flags.have_smart = (apb.enabled.extension & ATA_SUPPORT_SMARTLOG) != 0;
     dp->flags.have_selftest = (apb.enabled.extension & ATA_SUPPORT_SMARTTEST) != 0;
+#endif
     
     return 0;
 }
@@ -904,3 +964,4 @@ drive_ata_health_status(DRIVE *dp) {
     
     return -1;
 }
+

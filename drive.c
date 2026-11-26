@@ -191,7 +191,7 @@ drive_cam_xport2str(cam_xport xport) {
 void
 drive_init(DRIVE *dp) {
     memset(dp, 0, sizeof(*dp));
-    dp->raw.proto = DRIVE_PROTO_UNKNOWN;
+    dp->raw.class = DRIVE_CLASS_UNKNOWN;
     dp->raw.xport = XPORT_UNKNOWN;
     dp->raw.power_on_hours = DRIVE_NO_HOURS;
     dp->raw.endurance_used = DRIVE_NO_ENDURANCE_USED;
@@ -238,21 +238,21 @@ drive_selftest_status2str(enum drive_selftest_status status) {
 }
 
 const char *
-drive_proto2str(enum drive_protocol proto) {
-    switch (proto) {
-    case DRIVE_PROTO_UNKNOWN:
+drive_class2str(enum drive_class class) {
+    switch (class) {
+    case DRIVE_CLASS_UNKNOWN:
 	return "?";
-    case DRIVE_PROTO_SCSI:
+    case DRIVE_CLASS_SCSI:
 	return "SCSI";
-    case DRIVE_PROTO_ATA:
+    case DRIVE_CLASS_ATA:
 	return "ATA";
-    case DRIVE_PROTO_SATL:
+    case DRIVE_CLASS_SATL:
 	return "SATL";
-    case DRIVE_PROTO_NVME:
+    case DRIVE_CLASS_NVME:
 	return "NVME";
-    case DRIVE_PROTO_ATAPI:
+    case DRIVE_CLASS_ATAPI:
 	return "ATAPI";
-    case DRIVE_PROTO_MMCSD:
+    case DRIVE_CLASS_MMCSD:
 	return "MMCSD";
     }
 }
@@ -337,36 +337,38 @@ drive_classify(DRIVE *dp) {
     switch (d_protocol) {
     case PROTO_SCSI:
 	if (DRIVE_IS_ATAPI(d_protocol, d_type, c_transport))
-	    dp->raw.proto = DRIVE_PROTO_ATAPI;
+	    dp->raw.class = DRIVE_CLASS_ATAPI;
 	else if (d_type == T_DIRECT &&
-		 (c_transport == XPORT_USB || c_transport == XPORT_SAS)) {
-	    if (drive_scsi_is_satl(dp) == 1)
-		dp->raw.proto = DRIVE_PROTO_SATL;
-	    else
-		dp->raw.proto = DRIVE_PROTO_SCSI;
+		 (c_transport == XPORT_USB || c_transport == XPORT_SAS || c_transport == XPORT_SPI)) {
+	    if (drive_scsi_is_satl(dp) == 1) {
+		if (dp->raw.xport == XPORT_SPI)
+		    dp->raw.xport = XPORT_SAS; /* HP CISS SAS HBA hack */
+		dp->raw.class = DRIVE_CLASS_SATL;
+	    } else
+		dp->raw.class = DRIVE_CLASS_SCSI;
 	} else 
-	    dp->raw.proto = DRIVE_PROTO_SCSI;
+	    dp->raw.class = DRIVE_CLASS_SCSI;
 	break;
     case PROTO_ATA:
-	dp->raw.proto = DRIVE_PROTO_ATA;
+	dp->raw.class = DRIVE_CLASS_ATA;
 	break;
     case PROTO_ATAPI:
-	dp->raw.proto = DRIVE_PROTO_ATAPI;
+	dp->raw.class = DRIVE_CLASS_ATAPI;
 	break;
     case PROTO_MMCSD:
-	dp->raw.proto = DRIVE_PROTO_MMCSD;
+	dp->raw.class = DRIVE_CLASS_MMCSD;
 	break;
     case PROTO_NVME:
-	dp->raw.proto = DRIVE_PROTO_NVME;
+	dp->raw.class = DRIVE_CLASS_NVME;
 	break;
     default:
-	dp->raw.proto = DRIVE_PROTO_UNKNOWN;
+	dp->raw.class = DRIVE_CLASS_UNKNOWN;
     }
 
-    if (dp->raw.proto == DRIVE_PROTO_SATL) {
+    if (dp->raw.class == DRIVE_CLASS_SATL) {
 	int rc = satl_identify(dp);
 	if (rc < 0)
-	    dp->raw.proto = DRIVE_PROTO_SCSI;
+	    dp->raw.class = DRIVE_CLASS_SCSI;
     }
 	
 

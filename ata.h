@@ -35,6 +35,14 @@
 #define DRVLIST_ATA_H 1
 
 #include "drive.h"
+#include <cam/ata/ata_all.h>
+
+#define ATA_SMART_READ_DATA           0xd0
+
+
+extern int
+drive_ata_parse_identify(DRIVE *dp,
+			 struct ata_params *app);
 
 extern int
 drive_ata_identify(DRIVE *dp);

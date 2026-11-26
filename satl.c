@@ -49,6 +49,7 @@
 
 #include "utils.h"
 #include "satl.h"
+#include "ata.h"
 
 
 extern int f_debug;
@@ -65,6 +66,14 @@ extern int f_debug;
  * ATA command.
  */
 #define ATA_IDENTIFY_DEVICE    0xec
+
+#define ATA_CMD_SMART                 0xb0
+
+#define ATA_SMART_READ_DATA           0xd0
+#define ATA_SMART_READ_LOG            0xd5
+#define ATA_SMART_RETURN_STATUS       0xda
+
+#define ATA_SMART_LBA                 0x00c24f00U
 
 /*
  * ATA PASS-THROUGH protocol field, CDB byte 1 bits 4:1.
@@ -84,7 +93,7 @@ extern int f_debug;
 #define IDENTIFY_LENGTH        512
 #define SAT_TIMEOUT_MS         30000
 
-#define SMART_DATA_SIZE 5000
+#define SMART_DATA_SIZE 512
 
 /*
  * Decode an ATA IDENTIFY string.
@@ -171,8 +180,7 @@ print_cam_error(struct cam_device *dev,
 
 
 static void
-print_identify(const uint8_t *identify,
-	      uint8_t code) {
+print_identify(const uint8_t *identify) {
     char serial[21];
     char firmware[9];
     char model[41];
@@ -191,7 +199,7 @@ print_identify(const uint8_t *identify,
 
     word0 = ata_word(identify, 0);
 
-    printf("\tATA IDENTIFY(%u) succeeded\n", code);
+    printf("\tATA IDENTIFY succeeded\n");
     printf("\tModel:          %s\n", model);
     printf("\tSerial:         %s\n", serial);
     printf("\tFirmware:       %s\n", firmware);
@@ -210,6 +218,179 @@ print_identify(const uint8_t *identify,
         (word0 & 0x8000) != 0 ? "ATAPI/packet" : "ATA");
 }
 
+
+int
+drive_satl_command(DRIVE *dp,
+		   uint8_t command,
+		   uint8_t code,
+		   uint32_t lba,
+		   uint8_t *buffer,
+		   size_t bufsize) {
+    union ccb *ccb;
+    struct ccb_scsiio *csio;
+    uint8_t *cdb;
+    cam_status status;
+    uint8_t cdb_size = 16;
+    ssize_t result;
+
+ Retry:
+    if (f_debug)
+	fprintf(stderr, "  [drive_satl_command(0x%02x, 0x%02x, 0x%04x, ..., %zu), CDB Size=%d]\n", command, code, lba, bufsize, cdb_size);
+    
+    result = -1;
+    ccb = cam_getccb(dp->cam);
+    if (ccb == NULL) {
+        fprintf(stderr, "%s: drive_satl_command: cam_getccb failed: %s\n",
+            dp->cam->device_path, strerror(errno));
+        return -1;
+    }
+
+    csio = &ccb->csio;
+
+    /*
+     * Fill the SCSI I/O CCB.
+     *
+     * Use CAM_TAG_ACTION_NONE because this is a management command
+     * being sent through a USB bridge. Tagged queuing is unnecessary,
+     * and many USB bridges do not benefit from it.
+     *
+     * CAM_DIR_IN means data is transferred from the device.
+     */
+    cam_fill_csio(csio,
+		  1,                      /* retry count */
+		  NULL,                   /* completion callback */
+		  CAM_DIR_IN,             /* data direction */
+		  CAM_TAG_ACTION_NONE,    /* tag action */
+		  buffer,                 /* data buffer */
+		  bufsize,                /* transfer length */
+		  SSD_FULL_SIZE,          /* sense buffer size */
+		  cdb_size,               /* CDB length */
+		  SAT_TIMEOUT_MS);        /* timeout in milliseconds */
+    
+    cdb = csio->cdb_io.cdb_bytes;
+    memset(cdb, 0, cdb_size);
+
+    
+    switch (cdb_size) {
+    case 12:
+	/*
+	 * ATA PASS-THROUGH(12) register layout:
+	 *
+	 * Byte 0   OPERATION CODE (0xA1)
+	 * Byte 1   Bit 7-5 MULTIPLE_COUNT, Bit 4-1 PROTOCOL, Bit 0 Reserved
+	 * Byte 2   Bit 7-6 OFF_LINE, Bit 5 CK_COND, Bit 4 Reserved, Bit 3 T_DIR, Bit 2 BYTE_BLOCK, Bit 1-0 T_LENGTH
+	 * Byte 3   Features
+	 * Byte 4   SECTOR_COUNT
+	 * Byte 5   LBA low
+	 * Byte 6   LBA mid
+	 * Byte 7   LBA high
+	 * Byte 8   Device
+	 * Byte 9   Command
+	 * Byte 10  Reserved
+	 * Byte 11  Reserved1
+	 */
+	cdb[0] = ATA_PASS_12;
+	cdb[1] = (uint8_t)(SAT_PROTO_PIO_DATA_IN << 1);
+	cdb[2] =
+	    (1U << 3) |             /* T_DIR: device to host */
+	    (1U << 2) |             /* BYT_BLOK: blocks */
+	    SAT_TLEN_SECTOR_COUNT;  /* length from sector count */
+
+	cdb[3] = code;
+	cdb[4] = 1;                 /* one 512-byte sector */
+
+	cdb[5] = lba&0xff;
+	cdb[6] = (lba>>8)&0xff;
+	cdb[7] = (lba>>16)&0xff;
+
+	cdb[8] = 0;                 /* device register */
+	cdb[9] = command;
+	break;
+
+    case 16:
+	/*
+	 * ATA PASS-THROUGH(16) register layout:
+	 *
+	 * Byte 0   Operation Code
+	 * Byte 1   Bit 7-5 Multiple Count, Bit 4-2 Off.Line, Bit 1 SRST, Bit 0 Extend=0
+	 * Byte 2   Bit 7-6 Reserved, Bit 5 Dir, Bit 4-0 Protocol 
+	 * Byte 3   Bit 7 HWRST, Bit 6 DMA, Bit 5 D.En, Bit 4 LH.En, Bit 3 LM.En, Bit 2 LL.En, Bit 1 SC.En, Bit 0 F.En
+	 * Byte 4   Features
+	 * Byte 5   Sector count, high
+	 * Byte 6   Sector count, low
+	 * Byte 7   LBA low, high
+	 * Byte 8   LBA low, low
+	 * Byte 9   LBA mid, high
+	 * Byte 10  LBA mid, low
+	 * Byte 11  LBA high, high
+	 * Byte 12  LBA high, low
+	 * Byte 13  Device
+	 * Byte 14  Command
+	 * Byte 15  Control
+	 */
+	cdb[0] = ATA_PASS_16;
+	cdb[1] = (uint8_t)(SAT_PROTO_PIO_DATA_IN << 1);
+	cdb[2] =
+	    (1U << 3) |             /* T_DIR: device to host */
+	    (1U << 2) |             /* BYT_BLOK: blocks */
+	    SAT_TLEN_SECTOR_COUNT;  /* length from sector count */
+
+	cdb[4] = code;
+	cdb[5] = 0;
+	cdb[6] = 1;                 /* one 512-byte sector */
+	cdb[7] = 0x00;
+	cdb[8] = (lba&0xff);
+	cdb[9] = 0x00;
+	cdb[10] = (lba>>8)&0xff;
+	cdb[11] = 0x00;
+	cdb[12] = (lba>>16)&0xff;
+	cdb[13] = 0;                /* device register */
+	cdb[14] = command;
+	cdb[15] = 0;                /* ATA control register */
+    }
+    
+	
+    if (cam_send_ccb(dp->cam, ccb) < 0) {
+	fprintf(stderr, "%s%u: cam_send_ccb failed: %s\n",
+		dp->cam->given_dev_name,
+		dp->cam->given_unit_number,
+		strerror(errno));
+	result = -1;
+	goto out;
+    }
+
+    status = ccb->ccb_h.status & CAM_STATUS_MASK;
+
+    if (status != CAM_REQ_CMP) {
+	if (f_debug)
+	    print_cam_error(dp->cam, ccb);
+	result = -1;
+        goto out;
+    }
+
+    result = bufsize - csio->resid;
+    if (csio->resid != 0) {
+        fprintf(stderr,
+            "%s%u: NOTICE: short SATL transfer: "
+            "%zu of %zu bytes transferred\n",
+		dp->cam->given_dev_name,
+		dp->cam->given_unit_number,
+	        result,
+		bufsize);
+        goto out;
+    }
+
+out:
+    cam_freeccb(ccb);
+    
+    if (result < 0 && cdb_size == 16) {
+	cdb_size = 12;
+	goto Retry;
+    }
+    
+    return result;
+}
+
 /*
  * Send ATA IDENTIFY DEVICE through SAT ATA PASS-THROUGH(16).
  *
@@ -220,17 +401,21 @@ print_identify(const uint8_t *identify,
 int
 satl_identify(DRIVE *dp) {
     uint8_t identify[IDENTIFY_LENGTH];
+#if 0
     union ccb *ccb;
     struct ccb_scsiio *csio;
     uint8_t *cdb;
     cam_status status;
-    int result;
     uint8_t cdb_size = 16;
+#endif
+    int result;
 
+    memset(identify, 0, IDENTIFY_LENGTH);
 
+#if 0
  Retry:
     if (f_debug)
-	fprintf(stderr, "  [satl_identify(%du)}\n", cdb_size);
+	fprintf(stderr, "  [satl_identify]\n");
     result = -1;
     ccb = cam_getccb(dp->cam);
     if (ccb == NULL) {
@@ -238,8 +423,6 @@ satl_identify(DRIVE *dp) {
             dp->cam->device_path, strerror(errno));
         return -1;
     }
-
-    memset(identify, 0, IDENTIFY_LENGTH);
 
     csio = &ccb->csio;
 
@@ -390,8 +573,19 @@ satl_identify(DRIVE *dp) {
 
 out:
     cam_freeccb(ccb);
+#endif
 
-    if (result == 0) {
+    result = drive_satl_command(dp, ATA_IDENTIFY_DEVICE, 0, 0,
+				(uint8_t *) &identify, sizeof(identify));
+    if (result < 0)
+	return -1;
+
+    if (result != sizeof(identify)) {
+	fprintf(stderr, "** SATL SATA IDENTIFY too small returned data\n");
+	return -1;
+    }
+    
+    if (1) {
 	char serial[21];
 	char firmware[9];
 	char model[41];
@@ -446,118 +640,38 @@ out:
 	dp->ident = strdup(serial);
 	
 	if (f_debug)
-	    print_identify(identify, cdb_size);
-    } else {	
+	    print_identify(identify);
+    }
+
+#if 0
+    else {	
 	if (cdb_size == 16) {
 	    cdb_size = 12;
 	    goto Retry;
 	}
     }
-
+#endif
+    
     return result;
 }
 
 
-#ifdef WITH_MAIN
-int
-main(int argc, char **argv)
-{
-    struct cam_device *dev;
-    uint8_t identify[IDENTIFY_LENGTH];
-
-    if (argc != 2) {
-        fprintf(stderr, "usage: %s /dev/passN\n", argv[0]);
-        return EXIT_FAILURE;
-    }
-
-    /*
-     * O_RDWR is the least troublesome choice for pass-through access.
-     * IDENTIFY itself is read-only, but some CAM/pass configurations
-     * restrict pass-through operations on an O_RDONLY descriptor.
-     */
-    dev = cam_open_device(argv[1], O_RDWR);
-    if (dev == NULL) {
-        fprintf(stderr, "cannot open %s: %s\n",
-            argv[1], cam_errbuf);
-        return EXIT_FAILURE;
-    }
-
-    rc = sat_ata_identify(dev, identify, 16);
-    if (rc == 0) {
-	if (f_debug)
-	    print_identify(identify, 16);
-    } else {
-	rc = sat_ata_identify(dev, identify, 12);
-	if (rc == 0 && f_debug)
-	    print_identify(identify, 12);
-    }
-    cam_close_device(dev);
-    return rc == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
-}
-#endif
-
 
 int
-satl_drive_temperature(struct cam_device *dev,
-		       DRIVE *dp) {
-#if 0
+drive_satl_smart_data(DRIVE *dp) {
     uint8_t data[SMART_DATA_SIZE];
     ssize_t len;
-    uint16_t fallback_temperature;
-    size_t offset, i;
-    int have_fallback;
 
 
-    len = satl_cmd_smart(dev, ATA_SMART_READ_DATA, data, sizeof(data));
+    len = drive_satl_command(dp, ATA_CMD_SMART, ATA_SMART_READ_DATA, ATA_SMART_LBA, data, sizeof(data));
     if (len < 0)
 	return len;
     if (len != SMART_DATA_SIZE) {
 	errno = EIO;
 	return -1;
     }
-    
-    /*
-     * Prefer attribute 194, Temperature Celsius.
-     *
-     * Keep attribute 190, Airflow Temperature, as a fallback because
-     * some drives expose only 190.
-     */
-    have_fallback = 0;
-    fallback_temperature = 0.0;
 
-    for (i = 0; i < SMART_ATTRIBUTE_COUNT; i++) {
-	struct ata_smart_attribute *attr;
-	
-        offset = SMART_ATTRIBUTE_OFFSET + i * SMART_ATTRIBUTE_SIZE;
-	
-        attr = (struct ata_smart_attribute *) &data[offset];
-        if (attr->id == 0)
-            continue;
-	
-        if (attr->id == SMART_ATTR_TEMPERATURE_CELSIUS) {
-            if (ata_smart_attribute_temperature(attr, &dp->raw.temperature) == 0) {
-		if (f_debug)
-		    fprintf(stderr, "\tATA SMART DATA: drive temperature=%u\n", dp->raw.temperature);
-                return 1;
-	    }
-        }
-	
-        if (attr->id == SMART_ATTR_AIRFLOW_TEMPERATURE &&
-            !have_fallback) {
-            if (ata_smart_attribute_temperature(attr, &fallback_temperature) == 0) {
-		if (f_debug)
-		    fprintf(stderr, "\tATA SMART DATA: airflow temperature=%u\n", fallback_temperature);
-                have_fallback = 1;
-	    }
-        }
-    }
-    
-    if (have_fallback) {
-        dp->raw.temperature = fallback_temperature;
-        return 1;
-    }
-#endif    
-    return 0;
+    return drive_ata_parse_smart_data(dp, data, sizeof(data));
 }
 
 
@@ -568,25 +682,32 @@ satl_health_status(DRIVE *dp) {
     int rc1 = 0, rc2 = 0, rc3 = 0;
 
 
-    if (f_debug)
-	fprintf(stderr, "  [temp]\n");
-    
-    rc1 = satl_drive_temperature(dp->cam, dp);
-    if (rc1 < 0)
-	return rc1;
-
-#if 0
-    if (f_debug)
-	fprintf(stderr, "  [smart]\n");
-    rc2 = satl_smart_status(dp->cam, dp);
-
+    if (dp->flags.have_smart) {
+	if (f_debug)
+	    fprintf(stderr, "  [temperature & power_on_hours]\n");
+	rc1 = drive_satl_smart_data(dp);
+	if (rc1 < 0)
+	    return rc1;
+	
+	if (f_debug)
+	    fprintf(stderr, "  [smart status]\n");
+#if 0	
+	rc2 = drive_satl_smart_status(dp);
+#else
+	rc2 = 0;
+#endif
+    }
     if (dp->flags.have_selftest) {
 	if (f_debug)
 	    fprintf(stderr, "  [selftest]\n");
-	rc3 = satl_selftest_status(dp->cam, dp);
-    }
+#if 0
+	drive_satl_smart_log_directory(dp);
+	rc3 = drive_satl_smart_log(dp);
+#else
+	rc3 = 0;
 #endif
-    
+    }
+
     if (rc1 > 0 || rc2 > 0 || rc3 > 0)
 	return 1;
     if (rc1 == 0 && rc2 == 0 && rc3 == 0)

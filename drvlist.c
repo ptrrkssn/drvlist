@@ -75,6 +75,7 @@ int f_dir  = 1;
 int f_multipath = 0;
 int f_colwidth = 0;
 int f_width = 0;
+int f_yaml = 0;
 
 int t_width  = 0;
 int t_height = 0;
@@ -94,6 +95,7 @@ int f_tests = 0;
 int f_hours = 0;
 int f_wear = 0;
 int f_made = 0;
+int f_class = 0;
 int f_proto = 0;
 int f_xport = 0;
 int f_name = 1;
@@ -117,19 +119,19 @@ get_health_status(DRIVE *dp) {
 	return -1;
     }
 
-    switch (dp->raw.proto) {
-    case DRIVE_PROTO_SCSI:
+    switch (dp->raw.class) {
+    case DRIVE_CLASS_SCSI:
 	rc = drive_scsi_health_status(dp);
 	break;
-    case DRIVE_PROTO_SATL:
+    case DRIVE_CLASS_SATL:
 	rc = satl_health_status(dp);
 	if (!rc)
 	    rc = drive_scsi_health_status(dp);
 	break;
-    case DRIVE_PROTO_ATA:
+    case DRIVE_CLASS_ATA:
 	rc = drive_ata_health_status(dp);
 	break;
-    case DRIVE_PROTO_NVME:
+    case DRIVE_CLASS_NVME:
 	rc = nvme_health_status(dp);
 	break;
     default:
@@ -198,15 +200,17 @@ struct drive_column {
     { "WEAR",      4, offsetof(DRIVE, wear),    &f_wear },    
 #define C_MADE 12
     { "MADE",     -4, offsetof(DRIVE, made),    &f_made },    
-#define C_PROTO 13
+#define C_CLASS 13
+    { "CLASS",    -5, offsetof(DRIVE, class),   &f_class },    
+#define C_PROTO 14
     { "PROTO",    -5, offsetof(DRIVE, proto),   &f_proto },    
-#define C_XPORT 14
+#define C_XPORT 15
     { "XPORT",    -5, offsetof(DRIVE, xport),   &f_xport },    
-#define C_CTRL 15
+#define C_CTRL 16
     { "CTRL",     -4, offsetof(DRIVE, ctrl),    &f_ctrl },    
-#define C_PATH 16
+#define C_PATH 17
     { "PATH",     -4, offsetof(DRIVE, path),    &f_path },    
-#define C_PHYS 17
+#define C_PHYS 18
     { "PHYS",     -4, offsetof(DRIVE, phys),    &f_phys },    
 };
 
@@ -302,7 +306,9 @@ do_device(char *dname) {
 		cam->target_lun);
 
 	/* Get device serial number */
-	ident = cam->serial_num_len > 0 ? strdupget((char *) &cam->serial_num[0], cam->serial_num_len) : NULL;
+	if (cam->serial_num_len > 0) {
+	    ident = strdupget((char *) &cam->serial_num[0], cam->serial_num_len);
+	}
 
 	if (ident && f_multipath) {
 	    /* Locate multipath alternate names */
@@ -311,6 +317,20 @@ do_device(char *dname) {
 	} else
 	    i = dc;
 	dp = &dv[i];
+
+	if (f_debug) {
+	    fprintf(stderr, "  [cam]\n");
+	    if (cam->device_path[0])
+		fprintf(stderr, "\tCAM path      = %s\n", cam->device_path);
+	    fprintf(stderr, "\tCAM devname   = %s%u\n", cam->given_dev_name, cam->given_unit_number);
+	    fprintf(stderr, "\tCAM passname  = %s%u\n", cam->device_name, cam->dev_unit_num);
+	    fprintf(stderr, "\tCAM sim       = %s%u\n", cam->sim_name, cam->sim_unit_number);
+	    fprintf(stderr, "\tCAM serial    = %.*s\n", cam->serial_num_len, cam->serial_num);
+	    fprintf(stderr, "\tCAM target    = %u lun %lu\n", cam->target_id, cam->target_lun);
+	    fprintf(stderr, "\tCAM path_id   = %u\n", cam->path_id);
+	    fprintf(stderr, "\tCAM bus_id    = %u\n", cam->bus_id);
+	    drive_scsi_parse_inquiry(dp, (uint8_t *) &cam->inq_data, sizeof(cam->inq_data));
+	}
 	
 	if (i < dc) {
 	    /* Already probed drive, located via alternative path */
@@ -347,17 +367,17 @@ do_device(char *dname) {
 	    drive_classify(dp);
 
 	    /* Just in case get_drive_type fails */
-	    if (dp->raw.proto == DRIVE_PROTO_UNKNOWN) {
+	    if (dp->raw.class == DRIVE_CLASS_UNKNOWN) {
 		if (strcmp(cam->given_dev_name, "nda") == 0)
-		    dp->raw.proto = DRIVE_PROTO_NVME;
+		    dp->raw.class = DRIVE_CLASS_NVME;
 		else if (strcmp(cam->given_dev_name, "ada") == 0)
-		    dp->raw.proto = DRIVE_PROTO_ATA;
+		    dp->raw.class = DRIVE_CLASS_ATA;
 		else if (strcmp(cam->given_dev_name, "da") == 0) {
-		    dp->raw.proto = DRIVE_PROTO_SCSI;
+		    dp->raw.class = DRIVE_CLASS_SCSI;
 		}
 	    }
 		    
-	    if (dp->raw.proto == DRIVE_PROTO_NVME) {
+	    if (dp->raw.class == DRIVE_CLASS_NVME) {
 		/* NVME device */
 		char npath[1024];
 
@@ -374,7 +394,7 @@ do_device(char *dname) {
 			close(fd);
 			return -1;
 		    }
-		    nvme_identify_fd(nfd, &dp->vendor, &dp->product, &dp->version, NULL, &dp->phys, &have_selftest);
+		    nvme_identify_fd(nfd, &dp->vendor, &dp->product, &dp->version, NULL, &dp->phys, &dp->proto, &have_selftest);
 		    dp->flags.have_selftest = have_selftest;
 		    close(nfd);
 		    
@@ -407,17 +427,20 @@ do_device(char *dname) {
 		}
 
 		if (!dp->vendor || !dp->product || !dp->version) {
-		    if (dp->raw.proto == DRIVE_PROTO_ATA) {
+		    if (dp->raw.class == DRIVE_CLASS_ATA) {
 			drive_ata_identify(dp);
 		    }
 		}
 
-		switch (dp->raw.proto) {
-		case DRIVE_PROTO_MMCSD:
+		switch (dp->raw.class) {
+		case DRIVE_CLASS_MMCSD:
 		    fprintf(stderr, "[mmcsd]\n");
 		    break;
 		default:
 		    /* Probably only da (SAS/SCSI) drives */
+		    if (!dp->proto)
+			dp->proto = strdup(scsi_inquiry_version2str(SID_ANSI_REV(&cam->inq_data)));
+		    
 		    if (!dp->vendor && cam->inq_data.vendor[0])
 			dp->vendor = strdupget(cam->inq_data.vendor, sizeof(cam->inq_data.vendor));
 		    
@@ -454,7 +477,7 @@ do_device(char *dname) {
 		
 	    }
 
-	    dp->proto = strdup(drive_proto2str(dv[i].raw.proto));
+	    dp->class = strdup(drive_class2str(dv[i].raw.class));
 	    dp->xport = strdup(drive_cam_xport2str(dv[i].raw.xport));
 	    
 	    rc = get_health_status(dp);
@@ -518,13 +541,13 @@ do_device(char *dname) {
 	    exit(1);
 	}
 
-	fprintf(stderr, "DIOCGIDENT res=%d\n", res);
 	ident = strdupget(idbuf, sizeof(idbuf));
 	if (!ident) {
 	    fprintf(stderr, "%s: Error: %s: Memory allocation: %s\n",
 		    argv0, path, strerror(errno));
 	    exit(1);
 	}
+	fprintf(stderr, "*** IDENT FROM DIOCGIDENT: %s\n", ident);
 	
 	if (f_multipath) {
 	    for (i = 0; i < dc && strcmp(dv[i].ident, ident); i++)
@@ -562,17 +585,24 @@ do_device(char *dname) {
     return 0;
 }
 
+
 int
-p_column(const char *value,
-	int width,
-	const char *separator) {
+p_column(FILE *fp,
+	 const char *key,
+	 const char *value,
+	 int width,
+	 const char *separator) {
     if (!value)
 	value = "-";
-    
-    if (width < 0)
-	return printf("%s%-*s", separator ? separator : "", -width, value);
-    else
-	return printf("%s%*s", separator ? separator : "", width, value);
+
+    if (f_yaml) {
+	return fprintf(fp, " %s: \"%s\"\n", key, value);
+    } else {
+	if (width < 0)
+	    return fprintf(fp, "%s%-*s", separator ? separator : "", -width, value);
+	else
+	    return fprintf(fp, "%s%*s", separator ? separator : "", width, value);
+    }
 }
 
 
@@ -891,10 +921,10 @@ main(int argc,
 		f_verbose++;
 		break;
 
-	    case 's':
-		f_smart++;
+	    case 'y':
+		f_yaml++;
 		break;
-		
+
 	    case 'm':
 		f_multipath++;
 		break;
@@ -925,6 +955,7 @@ main(int argc,
 		    if (f_verbose > 5) {
 			f_ctrl++;
 			if (f_verbose > 6) {
+			    f_class++;
 			    f_proto++;
 			    f_xport++;
 			    if (f_verbose > 7) {
@@ -1022,20 +1053,24 @@ main(int argc,
     
     qsort(&dv[0], dc, sizeof(dv[0]), drive_sort);
 
-    if (isatty(1)) {
-	p_column("#", numlen, "\033[1;4m");
+    if (f_yaml)
+	printf("---\n");
+    else if (isatty(1)) {
+	p_column(stdout, NULL, "#", numlen, "\033[1;4m");
 	for (j = 0; j < NCOLUMNS; j++) {
 	    struct drive_column *dfp = &columns[j];
 	    
 	    if (!*columns[j].flag)
 		continue;
-	    p_column(dfp->name, dfp->width, f_sep);
+	    p_column(stdout, NULL, dfp->name, dfp->width, f_sep);
 	}
 	puts("\033[0m");
     }
 
     for (i = 0; i < dc; i++) {
-	printf("%*u", numlen, i+1);
+	if (!f_yaml)
+	    printf("%*u", numlen, i+1);
+	
 	for (j = 0; j < NCOLUMNS; j++) {
 	    struct drive_column *dfp = &columns[j];
 	    char *cp;
@@ -1044,7 +1079,9 @@ main(int argc,
 		continue;
 	    
 	    cp = * (char **) ((uint8_t *) &dv[i] + dfp->offset);
-	    p_column(cp, dfp->width, f_sep);
+	    if (f_yaml)
+		putc((j ? ' ' : '-'), stdout);
+	    p_column(stdout, dfp->name, cp, dfp->width, f_sep);
 	}
 	putchar('\n');
     }

@@ -40,14 +40,14 @@
 #include <stdint.h>
 #include <camlib.h>
 
-enum drive_protocol {
-    DRIVE_PROTO_UNKNOWN = 0,
-    DRIVE_PROTO_SCSI    = 1,
-    DRIVE_PROTO_ATA     = 2,
-    DRIVE_PROTO_SATL    = 3, /* ATA drive on SAS/USB controller */
-    DRIVE_PROTO_NVME    = 4,
-    DRIVE_PROTO_ATAPI   = 5, /* CD, DVD */
-    DRIVE_PROTO_MMCSD   = 6  /* MMC, SD, SDIO cards */
+enum drive_class {
+    DRIVE_CLASS_UNKNOWN = 0,
+    DRIVE_CLASS_SCSI    = 1,
+    DRIVE_CLASS_ATA     = 2,
+    DRIVE_CLASS_SATL    = 3, /* ATA drive on SAS/USB controller */
+    DRIVE_CLASS_NVME    = 4,
+    DRIVE_CLASS_ATAPI   = 5, /* CD, DVD */
+    DRIVE_CLASS_MMCSD   = 6  /* MMC, SD, SDIO cards */
 };
 
 enum drive_smart_status {
@@ -86,6 +86,7 @@ typedef struct {
     char *path;
     char *phys;
     char *proto;
+    char *class;
     char *xport;
     char *size;
     char *temp;
@@ -97,7 +98,7 @@ typedef struct {
 
     /* Binary raw data */
     struct {
-	enum drive_protocol proto;
+	enum drive_class class;
 	cam_xport xport;
 	enum drive_smart_status smart_status;
 	struct {
@@ -136,7 +137,7 @@ extern const char *
 drive_cam_devtype2str(uint8_t devtype);
 
 extern const char *
-drive_proto2str(enum drive_protocol proto);
+drive_class2str(enum drive_class proto);
 
 extern const char *
 drive_cam_proto2str(cam_proto proto);

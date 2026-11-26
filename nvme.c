@@ -191,6 +191,7 @@ nvme_identify_fd(int fd,
 		 char **revision,
 		 char **serial,
 		 char **phys,
+		 char **proto,
 		 int *have_selftest) {
     struct nvme_pt_command pt;
     struct nvme_controller_data cdata;
@@ -245,6 +246,21 @@ nvme_identify_fd(int fd,
     if (serial)
 	*serial = strdupget(((const char*)cdata.sn), NVME_SERIAL_NUMBER_LENGTH);
 
+    if (proto && cdata.ver) {
+	char buf[64];
+
+	if ((cdata.ver)&0xff)
+	    sprintf(buf, "%d.%d.%d",
+		    (cdata.ver>>16)&0xffff,
+		    (cdata.ver>>8)&0xff,
+		    (cdata.ver)&0xff);
+	else
+	    sprintf(buf, "%d.%d",
+		    (cdata.ver>>16)&0xffff,
+		    (cdata.ver>>8)&0xff);
+	    
+	*proto = strdup(buf);
+    }
     if (phys) {
 	char pbuf[MAXPATHLEN];
 	
