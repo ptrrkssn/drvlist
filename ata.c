@@ -454,8 +454,42 @@ drive_ata_smart_data(DRIVE *dp) {
 int
 drive_ata_parse_identify(DRIVE *dp,
 			struct ata_params *app) {
-
+    uint32_t logical_size = 512;
+    uint32_t physical_size = 512;
+    char buf[128], tbuf[64];;
+    
     ata_param_fixup(app);
+
+    
+    if ((app->pss & 0xc000) == 0x4000) {
+	if (app->pss & (1U << 12)) {
+	    uint32_t words_per_logical;
+
+	    words_per_logical = (uint32_t) app->lss_1 | ((uint32_t) app->lss_2 << 16);
+	    logical_size = words_per_logical * 2;
+	}
+	if (app->pss & (1U << 13)) {
+	    unsigned exponent = app->pss & 0x0f;
+
+	    physical_size = logical_size << exponent;
+	} else
+	    physical_size = logical_size;
+    }
+
+
+    if (logical_size == physical_size)
+	sprintf(buf, "%sn", bsize2str(logical_size, NULL, 0));
+    else if (physical_size == 4096)
+	sprintf(buf, "%se", bsize2str(logical_size, NULL, 0));
+    else
+	sprintf(buf, "%s/%s",
+		bsize2str(logical_size, NULL, 0),
+		bsize2str(physical_size, tbuf, sizeof(tbuf)));
+		
+    dp->sector = strdup(buf);
+
+    dp->rpm = strdup(rpm2str(app->media_rotation_rate));
+    dp->form = strdup(form2str(app->form_factor & ATA_FORM_FACTOR_MASK));
     
     if (f_debug) {
 	fprintf(stderr, "\tATA IDENTIFY: model           = %.*s\n",
@@ -464,6 +498,15 @@ drive_ata_parse_identify(DRIVE *dp,
 		(int) sizeof(app->revision), app->revision);
 	fprintf(stderr, "\tATA IDENTIFY: serial          = %.*s\n",
 		(int) sizeof(app->serial), app->serial);
+	
+	fprintf(stderr, "\tATA IDENTIFY: rpm             = %s\n",
+		dp->rpm);
+	fprintf(stderr, "\tATA IDENTIFY: form_factor     = %s\n",
+		dp->form);
+	
+	fprintf(stderr, "\tATA IDENTIFY: physical_sector = %u\n", physical_size);
+	fprintf(stderr, "\tATA IDENTIFY: logical_sector  = %u\n", logical_size);
+		
 	fprintf(stderr, "\tATA IDENTIFY: tcg             = 0x%04x\n",
 		app->tcg);
 	fprintf(stderr, "\tATA IDENTIFY: capabilities1   = 0x%04x\n",
@@ -562,66 +605,6 @@ drive_ata_identify(DRIVE *dp) {
     cam_freeccb(ccb);
 
     drive_ata_parse_identify(dp, &apb);
-
-#if 0
-    if (f_debug) {
-	fprintf(stderr, "\t%s IDENTIFY: model           = %.*s\n",
-		(command == ATA_ATA_IDENTIFY ? "ATA" : "ATAPI"),
-		(int) sizeof(apb.model), apb.model);
-	fprintf(stderr, "\t%s IDENTIFY: revision        = %.*s\n",
-		(command == ATA_ATA_IDENTIFY ? "ATA" : "ATAPI"),
-		(int) sizeof(apb.revision), apb.revision);
-	fprintf(stderr, "\t%s IDENTIFY: tcg             = 0x%04x\n",
-		(command == ATA_ATA_IDENTIFY ? "ATA" : "ATAPI"),
-		apb.tcg);
-	fprintf(stderr, "\t%s IDENTIFY: capabilities1   = 0x%04x\n",
-		(command == ATA_ATA_IDENTIFY ? "ATA" : "ATAPI"),
-		apb.capabilities1);
-	fprintf(stderr, "\t%s IDENTIFY: capabilities2   = 0x%04x\n",
-		(command == ATA_ATA_IDENTIFY ? "ATA" : "ATAPI"),
-		apb.capabilities2);
-	fprintf(stderr, "\t%s IDENTIFY: multi           = 0x%04x\n",
-		(command == ATA_ATA_IDENTIFY ? "ATA" : "ATAPI"),
-		apb.multi);
-	fprintf(stderr, "\t%s IDENTIFY: mwdmamodes      = 0x%04x\n",
-		(command == ATA_ATA_IDENTIFY ? "ATA" : "ATAPI"),
-		apb.mwdmamodes);
-	fprintf(stderr, "\t%s IDENTIFY: version_major   = 0x%04x\n",
-		(command == ATA_ATA_IDENTIFY ? "ATA" : "ATAPI"),
-		apb.version_major);
-	fprintf(stderr, "\t%s IDENTIFY: version_minor   = 0x%04x\n",
-		(command == ATA_ATA_IDENTIFY ? "ATA" : "ATAPI"),
-		apb.version_minor);
-	fprintf(stderr, "\t%s IDENTIFY: mwdmamodes      = 0x%04x\n",
-		(command == ATA_ATA_IDENTIFY ? "ATA" : "ATAPI"),
-		apb.mwdmamodes);
-	fprintf(stderr, "\t%s IDENTIFY: extension       = 0x%04x :%s%s\n",
-		(command == ATA_ATA_IDENTIFY ? "ATA" : "ATAPI"),
-		apb.enabled.extension,
-		((apb.enabled.extension & ATA_SUPPORT_SMARTLOG) ? " SMARTLOG" : ""),
-		((apb.enabled.extension & ATA_SUPPORT_SMARTTEST) ? " SMARTTEST" : ""));
-
-	if (apb.atavalid & ATA_FLAG_64_70) {
-	    fprintf(stderr, "\t%s IDENTIFY: apiomodes       = 0x%04x\n",
-		    (command == ATA_ATA_IDENTIFY ? "ATA" : "ATAPI"),
-		    apb.apiomodes);
-	}
-	fprintf(stderr, "\t%s IDENTIFY: satacapabilities  = 0x%04x (%s)\n",
-		(command == ATA_ATA_IDENTIFY ? "ATA" : "ATAPI"),
-		apb.satacapabilities, ata_cap_gen2str(apb.satacapabilities));
-	fprintf(stderr, "\t%s IDENTIFY: satacapabilities2 = 0x%04x\n",
-		(command == ATA_ATA_IDENTIFY ? "ATA" : "ATAPI"),
-		apb.satacapabilities2);
-    }
-    
-    dp->vendor  = strdup("ATA");
-    dp->product = strndup((char *) apb.model, sizeof(apb.model));
-    dp->version = strndup((char *) apb.revision, sizeof(apb.revision));
-
-    dp->flags.have_smart = (apb.enabled.extension & ATA_SUPPORT_SMARTLOG) != 0;
-    dp->flags.have_selftest = (apb.enabled.extension & ATA_SUPPORT_SMARTTEST) != 0;
-#endif
-    
     return 0;
 }
 

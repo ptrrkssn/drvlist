@@ -89,12 +89,15 @@ typedef struct {
     char *class;
     char *xport;
     char *size;
+    char *sector;
+    char *rpm;
     char *temp;
     char *smart;
     char *tests;
     char *hours;
     char *wear;
     char *made;
+    char *form;
 
     /* Binary raw data */
     struct {

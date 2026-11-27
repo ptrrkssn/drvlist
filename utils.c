@@ -125,6 +125,46 @@ put_be16(uint8_t *p,
 
 
 char *
+bsize2str(uint64_t size,
+	  char *buf,
+	  size_t bufsize) {
+    static char sbuf[256];
+
+    if (!buf) {
+	buf = sbuf;
+	bufsize = sizeof(sbuf);
+    }
+    
+    if (size < 1024) {
+	snprintf(buf, sizeof(buf), "%zu", size);
+	return buf;
+    }
+    
+    size >>= 10;
+    if (size < 1024) {
+	snprintf(buf, sizeof(buf), "%zuK", size);
+	return buf;
+    }
+    
+    size >>= 10;
+    if (size < 1024) {
+	snprintf(buf, sizeof(buf), "%zuM", size);
+	return buf;
+    }
+    
+    size >>= 10;
+    if (size < 1024) {
+	snprintf(buf, sizeof(buf), "%zuG", size);
+	return buf;
+    }
+    
+    size >>= 10;
+    snprintf(buf, sizeof(buf), "%zuT", size);
+    return buf;
+}
+
+
+char *
 size2str(size_t size) {
     char buf[256];
     double ds = size;
@@ -290,5 +330,56 @@ strntrim(char *str,
     }
 
     return rlen;
+}
+
+const char *
+rpm2str(uint16_t rpm) {
+    static char buf[64];
+    double v;
+    
+    if (rpm == 0x0000)
+	return "?";
+    if (rpm == 0x0001)
+	return "-";
+    if (rpm <= 0x0400 || rpm == 0xffff)
+	return "?";
+
+    if (rpm >= 10000)
+	snprintf(buf, sizeof(buf), "%uK", rpm/1000);
+    else {
+	v = rpm/1000.0;
+	snprintf(buf, sizeof(buf), "%.1fK", v);
+    }
+
+    return buf;
+}
+
+const char *
+form2str(uint8_t form) {
+    static char buf[64];
+    
+    switch (form) {
+    case 0x0:
+	return "-";
+    case 0x1:
+	return "5.25\"";
+    case 0x2:
+	return "3.5\"";
+    case 0x3:
+	return "2.5\"";
+    case 0x4:
+	return "1.8\"";
+    case 0x5:
+	return "<1.8\"";
+    case 0x6:
+	return "mSATA";
+    case 0x7:
+	return "M.2";
+    case 0x8:
+	return "uSSD";
+    default:
+	snprintf(buf, sizeof(buf), "#%u", form);
+	return buf;
+    }
 }
 

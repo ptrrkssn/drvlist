@@ -52,11 +52,14 @@ extern const char *
 scsi_inquiry_version2str(uint8_t version);
 
 extern ssize_t
-drive_scsi_inquiry(DRIVE *dp,
-		   uint16_t page,
-		   void *buf,
-		   size_t bufsize);
+drive_scsi_get_inquiry(DRIVE *dp,
+		       uint16_t page,
+		       void *buf,
+		       size_t bufsize);
 
+extern int
+drive_scsi_inquiry(DRIVE *dp);
+		   
 extern int
 drive_scsi_has_vpd_page(DRIVE *dp,
 			uint8_t page_id);

@@ -89,6 +89,8 @@ int f_product = 1;
 int f_version = 1;
 int f_ident = 1;
 int f_size = 1;
+int f_sector = 0;
+int f_rpm = 0;
 int f_temp = 0;
 int f_smart = 0;
 int f_tests = 0;
@@ -102,7 +104,7 @@ int f_name = 1;
 int f_ctrl = 0;
 int f_path = 0;
 int f_phys = 0;
-
+int f_form = 0;
 
 
 
@@ -188,32 +190,39 @@ struct drive_column {
     { "IDENT",    -5, offsetof(DRIVE, ident),   &f_ident },    
 #define C_SIZE 6
     { "SIZE",      4, offsetof(DRIVE, size),    &f_size },    
-#define C_TEMP 7
+#define C_SECTOR 7
+    { "SECTOR",    6, offsetof(DRIVE, sector),  &f_sector },    
+#define C_TEMP 8
     { "TEMP",      4, offsetof(DRIVE, temp),    &f_temp },    
-#define C_SMART 8
+#define C_SMART 9
     { "SMART",    -5, offsetof(DRIVE, smart),   &f_smart },    
-#define C_TESTS 9
+#define C_TESTS 10
     { "TESTS",    -5, offsetof(DRIVE, tests),   &f_tests },    
-#define C_HOURS 10
+#define C_HOURS 11
     { "HOURS",     5, offsetof(DRIVE, hours),   &f_hours },    
-#define C_WEAR 11
+#define C_WEAR 12
     { "WEAR",      4, offsetof(DRIVE, wear),    &f_wear },    
-#define C_MADE 12
+#define C_MADE 13
     { "MADE",     -4, offsetof(DRIVE, made),    &f_made },    
-#define C_CLASS 13
+#define C_CLASS 14
     { "CLASS",    -5, offsetof(DRIVE, class),   &f_class },    
-#define C_PROTO 14
+#define C_PROTO 15
     { "PROTO",    -5, offsetof(DRIVE, proto),   &f_proto },    
-#define C_XPORT 15
+#define C_XPORT 16
     { "XPORT",    -5, offsetof(DRIVE, xport),   &f_xport },    
-#define C_CTRL 16
+#define C_RPM 17
+    { "RPM",      -3, offsetof(DRIVE, rpm),     &f_rpm },    
+#define C_FORM 18
+    { "FORM",     -4, offsetof(DRIVE, form),    &f_form },    
+#define C_CTRL 19
     { "CTRL",     -4, offsetof(DRIVE, ctrl),    &f_ctrl },    
-#define C_PATH 17
+#define C_PATH 20
     { "PATH",     -4, offsetof(DRIVE, path),    &f_path },    
-#define C_PHYS 18
+#define C_PHYS 21
     { "PHYS",     -4, offsetof(DRIVE, phys),    &f_phys },    
 };
 
+	
 #define NCOLUMNS (sizeof(columns)/sizeof(columns[0]))
 
 

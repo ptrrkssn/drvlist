@@ -67,6 +67,9 @@ extern char *argv0;
 #define SCSI_TIMEOUT 5000
 
 #define SCSI_LOG_SENSE                       0x4d
+#define SCSI_READ_CAPACITY                   0x9e
+
+#define SCSI_BLOCKDEV_CHARACTERISTICS_PAGE   0xb1
 
 #define SCSI_SUPPORTED_LOGS_PAGE             0x00
 #define SCSI_SUPPORTED_LOGS_SUBPAGE          0x00
@@ -148,6 +151,7 @@ struct supported_log_pages {
     unsigned int format_status : 1;
     unsigned int background_scan : 1;
     unsigned int start_stop_cycle : 1;
+    unsigned int blockdev_chars : 1;
 };
 
 void
@@ -239,10 +243,10 @@ is_invalid(uint8_t *data,
 
 
 ssize_t
-drive_scsi_inquiry(DRIVE *dp,
-		   uint16_t page,
-		   void *buf,
-		   size_t bufsize) {
+drive_scsi_get_inquiry(DRIVE *dp,
+		       uint16_t page,
+		       void *buf,
+		       size_t bufsize) {
     union ccb *ccb = NULL;
     uint32_t cam_status;
     size_t cam_resid;
@@ -342,12 +346,42 @@ scsi_inquiry_version2str(uint8_t version) {
     }
 }
 
+
+static const char *
+sas_version(uint16_t vd) {
+    if (vd >= 0x0be0 && vd < 0x0c00)
+        return "SAS";
+    if (vd >= 0x0c00 && vd < 0x0c20)
+        return "SAS-1.1";
+    if (vd >= 0x0c20 && vd < 0x0c40)
+        return "SAS-2";
+    if (vd >= 0x0c40 && vd < 0x0c60)
+        return "SAS-2.1";
+    if (vd >= 0x0c60 && vd < 0x0c80)
+        return "SAS-3";
+    if (vd >= 0x0c80 && vd < 0x0ca0)
+        return "SAS-4";
+
+    if (vd >= 0x0ea0 && vd < 0x0ec0)
+        return "SPL";
+    if (vd >= 0x0ec0 && vd < 0x0ee0)
+        return "SPL-2";
+    if (vd >= 0x0ee0 && vd < 0x0f00)
+        return "SPL-3";
+    if (vd >= 0x0f00 && vd < 0x0f20)
+        return "SPL-4";
+
+    return "-";
+}
+
+
 int
 drive_scsi_parse_inquiry(DRIVE *dp,
 			 uint8_t *buffer,
 			 size_t bufsize) {
     struct scsi_inquiry_data *inq = (struct scsi_inquiry_data *) buffer;
 
+    
     
     if (f_debug) {
 	fprintf(stderr, "\tSCSI INQUIRY: removable   = %s\n",  SID_IS_REMOVABLE(inq) ? "Yes" : "No");
@@ -362,20 +396,46 @@ drive_scsi_parse_inquiry(DRIVE *dp,
 	    fprintf(stderr, "\tSCSI INQUIRY: revision    = %.*s\n", (int) sizeof(inq->revision), inq->revision);
 	if (bufsize >= 36)
 	    fprintf(stderr, "\tSCSI INQUIRY: vendor      = %.*s\n", (int) (bufsize-36 < 20 ? bufsize-36 : 20), buffer+36);
-	if (f_debug > 1)
-	    p_buffer(stderr, buffer, bufsize);
     }
+    
+    if (bufsize >= 73) {
+	int i;
+	uint8_t *bp = &inq->version1[0];
+	
+	for (i=1; i<8; i++) {
+	    uint16_t v = get_be16(bp+i*2);
+	    
+	    
+	    if (v >= 0x0b00 && v <= 0x0cff) {
+		dp->xport = strdup(sas_version(v));
+		if (f_debug)
+		    fprintf(stderr, "\tSCSI INQUIRY: vdesc %d (SAS Version) = 0x%04x (%s)\n", i, v, sas_version(v));
+	    } else if (v >= 0x0e00 && v <= 0x0fff) {
+		dp->xport = strdup(sas_version(v));
+		if (f_debug)
+		    fprintf(stderr, "\tSCSI INQUIRY: vdesc %d (SPL Version) = 0x%04x (%s)\n", i, v, sas_version(v));
+	    } else {
+		if (f_debug)
+		    fprintf(stderr, "\tSCSI INQUIRY: vdesc %d               = 0x%04x (%s)\n", i, v, sas_version(v));
+	    }
+	}
+    }
+    
+    if (f_debug > 1)
+	p_buffer(stderr, buffer, bufsize);
+
+
     
     return 0;
 }
 
 int
-drive_scsi_get_inquiry(DRIVE *dp) {
+drive_scsi_inquiry(DRIVE *dp) {
     uint8_t buffer[252];
     ssize_t res;
     
 
-    res = drive_scsi_inquiry(dp, 0, buffer, sizeof(buffer));
+    res = drive_scsi_get_inquiry(dp, 0, buffer, sizeof(buffer));
     if (res < 0)
 	return res;
 
@@ -392,7 +452,7 @@ drive_scsi_get_vpd_page(DRIVE *dp,
     ssize_t res;
     
 
-    return drive_scsi_inquiry(dp,
+    return drive_scsi_get_inquiry(dp,
 			     page_id | INQUIRY_EVPD,
 			     buffer, bufsize);
     if (res < 0)
@@ -402,44 +462,58 @@ drive_scsi_get_vpd_page(DRIVE *dp,
 }
 
 int
-drive_scsi_has_vpd_page(DRIVE *dp,
-			uint8_t page_id) {
-    struct scsi_vpd_supported_page_list pages;
-    int i;
+drive_scsi_get_vpd_supported_pages(DRIVE *dp,
+				   struct scsi_vpd_supported_page_list *pages) {
     ssize_t res;
-    int rc = 0;
-    int npages;
-    
 
-    if (f_debug)
-	fprintf(stderr, "  [scsi_inquiry_has_vpd_page 0x%02x]\n", page_id);
-    
-    res = drive_scsi_inquiry(dp,
+
+    res = drive_scsi_get_inquiry(dp,
 			     SVPD_SUPPORTED_PAGE_LIST | INQUIRY_EVPD,
-			     (uint8_t *) &pages,
-			     sizeof(pages));
+			     (uint8_t *) pages,
+			     sizeof(*pages));
     if (res < 0)
 	return res;
 
     if (res < 4) {
-	fprintf(stderr, "%s: Error: %s%u: INQUIRY 0x%02x Invalid response [res=%zd length=%u]\n",
+	fprintf(stderr, "%s: Error: %s%u: INQUIRY VPD 0x%02x Invalid response [res=%zd length=%u]\n",
 		argv0, dp->cam->given_dev_name, dp->cam->given_unit_number,
 		SVPD_SUPPORTED_PAGE_LIST,
-		res, pages.length);
+		res, pages->length);
 	errno = EIO;
 	return -1;
     }
 
-    if (pages.length+4 < res)
-	npages = pages.length;
-    else
-	npages = res-4;
+    if (pages->length+4 > res) {
+	if (f_debug)
+	    fprintf(stderr, "%s: Error: %s%u: INQUIRY VPD 0x%02x: Invalid length, adjusting %d -> %zu\n",
+		    argv0, dp->cam->given_dev_name, dp->cam->given_unit_number,
+		    SVPD_SUPPORTED_PAGE_LIST,
+		    pages->length, res-4);
+	
+	pages->length = res-4;
+    }
+    
+    return res;
+}
+
+int
+drive_scsi_has_vpd_page(DRIVE *dp,
+			uint8_t page_id) {
+    struct scsi_vpd_supported_page_list pages;
+    ssize_t res;
+    int i;
+    int rc = 0;
+
+
+    res = drive_scsi_get_vpd_supported_pages(dp, &pages);
+    if (res < 0)
+	return -1;
 
     if (f_debug)
-	fprintf(stderr, "\tINQUIRY VPD PAGES: %d (%d) Supported : ",
-		npages, pages.length);
+	fprintf(stderr, "\tINQUIRY VPD PAGES: %d Supported : ",
+		pages.length);
     
-    for (i = 0; i < npages; i++) {
+    for (i = 0; i < pages.length; i++) {
 	if (pages.list[i] == page_id)
 	    rc = 1;
 	if (f_debug)
@@ -448,9 +522,8 @@ drive_scsi_has_vpd_page(DRIVE *dp,
     if (f_debug)
 	putc('\n', stderr);
     
-    return rc;
+    return rc;    
 }
-
 
 struct scsi_vpd_sat_ata_information {
     uint8_t device;
@@ -492,7 +565,7 @@ drive_scsi_dump_vpd_pages(DRIVE *dp) {
 
     fprintf(stderr, "  [scsi_dump_inquiry_vpd_pages]\n");
     
-    res = drive_scsi_inquiry(dp,
+    res = drive_scsi_get_inquiry(dp,
 			     SVPD_SUPPORTED_PAGE_LIST | INQUIRY_EVPD,
 			     (uint8_t *) &pages,
 			     sizeof(pages));
@@ -1330,6 +1403,256 @@ drive_scsi_is_satl(DRIVE *dp) {
 }
 
 
+ssize_t
+drive_scsi_get_read_capacity(DRIVE *dp,
+			     uint8_t *buffer,
+			     size_t bufsize) {
+    union ccb *ccb = NULL;
+    uint32_t cam_status;
+    size_t cam_resid;
+    
+    
+
+    memset(buffer, 0, bufsize);
+
+    ccb = cam_getccb(dp->cam);
+    if (ccb == NULL)
+	return -1;
+    
+    scsi_read_capacity_16(&ccb->csio,
+			  SCSI_RETRIES,
+			  NULL,
+			  CAM_TAG_ACTION_NONE,
+			  0, 0, 0,
+			  (uint8_t *) buffer,
+			  bufsize,
+			  SSD_FULL_SIZE,
+			  SCSI_TIMEOUT);
+    
+    /* Disable freezing the device queue */
+    ccb->ccb_h.flags |= CAM_DEV_QFRZDIS;
+    ccb->ccb_h.flags |= CAM_PASS_ERR_RECOVER;
+    
+    if (cam_send_ccb(dp->cam, ccb) < 0) {
+	if (f_debug)
+	    fprintf(stderr,
+		    "%s: Error: %s%u: READ_CAPACITY(16) Failed: cam_send_ccb: %s\n",
+		    argv0, dp->cam->given_dev_name, dp->cam->given_unit_number,
+		    strerror(errno));
+	cam_freeccb(ccb);
+	return -1;
+    }
+    
+    cam_status = (ccb->ccb_h.status & CAM_STATUS_MASK);
+    cam_resid = ccb->csio.resid;
+    
+    cam_freeccb(ccb);
+    
+    if (cam_status != CAM_REQ_CMP) {
+	if (f_debug)
+	    fprintf(stderr,
+		    "%s: Error: %s%u: SCSI READ CAPACITY(16) Failed: cam_send_ccb: status != CAM_REQ_CMP\n",
+		    argv0, dp->cam->given_dev_name, dp->cam->given_unit_number);
+	errno = EBUSY;
+	return -1;
+    }
+    
+    if (cam_resid > bufsize) {
+	if (f_debug)
+	    fprintf(stderr,
+		    "%s: Error: %s%u: SCSI READ CAPACITY(16) Failed: cam_send_ccb: resid > bufsize\n",
+		    argv0, dp->cam->given_dev_name, dp->cam->given_unit_number);
+	errno = EIO;
+
+
+	return -1;
+    }
+
+    return bufsize - cam_resid;
+}
+
+
+int
+drive_scsi_parse_read_capacity(DRIVE *dp,
+			       uint8_t *buffer,
+			       size_t bufsize) {
+    char valbuf[64], tmpbuf[64];
+
+    
+    if (bufsize != 32)
+	return -1;
+    
+    uint64_t lba = get_be(buffer+0, 8);
+    uint32_t lbl = get_be(buffer+8, 4);
+    uint8_t rc_basis = (buffer[12] >> 4) & 0x03;
+    uint8_t p_type   = (buffer[12] >> 1) & 0x07;
+    uint8_t prot_en  = (buffer[12] & 0x01);
+    uint8_t pie   = (buffer[13] >> 4) & 0x0f;
+    uint8_t lbpbe = (buffer[13] & 0x0f);
+    uint8_t lbpme = (buffer[14] >> 7) & 0x01;
+    uint8_t lbprz = (buffer[14] >> 6) & 0x01;
+    uint8_t lalba = (((uint32_t) buffer[14] & 0x3f) << 8) | (uint32_t) buffer[15];
+    uint32_t pbl;
+    uint64_t size;
+    
+    
+    pbl = lbl << lbpbe;
+    size = lba*lbl;
+
+    if (lbl == pbl)
+	sprintf(valbuf, "%sn", bsize2str(lbl, NULL, 0));
+    else if (pbl == 4096)
+	sprintf(valbuf, "%se", bsize2str(lbl, NULL, 0));
+    else
+	sprintf(valbuf, "%s/%s",
+		bsize2str(lbl, NULL, 0),
+		bsize2str(pbl, tmpbuf, sizeof(tmpbuf)));
+		
+    dp->sector = strdup(valbuf);
+
+    if (!dp->size) {
+	dp->size = size2str(size);
+    }
+    
+    if (f_debug) {
+	fprintf(stderr, "\tSCSI READ CAPACITY: lba       = %zu\n", lba);
+	fprintf(stderr, "\tSCSI READ CAPACITY: size      = %zu (%s)\n", size, size2str(size));
+	fprintf(stderr, "\tSCSI READ CAPACITY: lbl       = %u\n", lbl);
+	fprintf(stderr, "\tSCSI READ CAPACITY: pbl       = %u\n", pbl);
+	fprintf(stderr, "\tSCSI READ CAPACITY: rc_basis  = 0x%02x\n", rc_basis);
+	fprintf(stderr, "\tSCSI READ CAPACITY: p_type    = %u\n", p_type);
+	fprintf(stderr, "\tSCSI READ CAPACITY: prot_en   = %u\n", prot_en);
+	fprintf(stderr, "\tSCSI READ CAPACITY: pie       = %u\n", pie);
+	fprintf(stderr, "\tSCSI READ CAPACITY: lbpbe     = %u\n", lbpbe);
+	fprintf(stderr, "\tSCSI READ CAPACITY: lbpme     = %u\n", lbpme);
+	fprintf(stderr, "\tSCSI READ CAPACITY: lbprz     = %u\n", lbprz);
+	fprintf(stderr, "\tSCSI READ CAPACITY: lalba     = %u\n", lalba);
+    }
+
+    return 1;
+}
+
+
+ssize_t
+drive_scsi_read_capacity(DRIVE *dp) {
+    uint8_t buffer[32];
+    ssize_t res;
+
+    if (f_debug)
+	fprintf(stderr, "    [scsi_read_capacity]\n");
+    
+    res = drive_scsi_get_read_capacity(dp, buffer, sizeof(buffer));
+    if (res < 0)
+	return res;
+
+    return drive_scsi_parse_read_capacity(dp, buffer, res);
+}
+
+static const char *
+type2str(uint8_t type) {
+    static char buf[64];
+    
+    switch (type) {
+    case 0x0:
+	return "-";
+    case 0x1:
+	return "CFast";
+    case 0x2:
+	return "CF";
+    case 0x3:
+	return "MS";
+    case 0x4:
+	return "MMC";
+    case 0x5:
+	return "SD";
+    case 0x6:
+	return "XQD";
+    case 0x7:
+	return "UFS";
+    default:
+	snprintf(buf, sizeof(buf), "#%u", type);
+	return buf;
+    }
+}
+
+
+ssize_t
+drive_scsi_parse_blockdev_characteristics(DRIVE *dp,
+					  uint8_t *buffer,
+					  size_t bufsize) {
+    uint32_t rpm;
+    uint8_t type;
+    uint8_t form;
+    uint16_t buflen;
+    
+
+    if (buffer[1] != 0xB1) {
+	if (f_debug)
+	    fprintf(stderr, "%s%u: scsi blockdev: invalid response\n",
+		    dp->cam->given_dev_name, dp->cam->given_unit_number);
+	errno = EIO;
+	return -1;
+    }
+	    
+    buflen = get_be(buffer+2, 2);
+
+    if (buflen+4 > bufsize) {
+	if (f_debug)
+	    fprintf(stderr, "%s%u: scsi blockdev: bufsize = %zu, buflen = %u -> %zu\n",
+		    dp->cam->given_dev_name, dp->cam->given_unit_number,
+		    bufsize, buflen,
+		    bufsize-4);
+	buflen = bufsize-4;
+    }
+    
+    if (buflen < 2) {
+	if (f_debug)
+	    fprintf(stderr, "%s%u: scsi blockdev: buflen = %u < 2\n",
+		    dp->cam->given_dev_name, dp->cam->given_unit_number, buflen);
+	errno = EIO;
+	return -1;
+    }
+    
+    rpm  = get_be(buffer+4, 2);
+    dp->rpm  = strdup(rpm2str(rpm));
+    if (f_debug)
+	fprintf(stderr, "\tSCSI BLOCKDEV CHAR: rpm  = %u (%s)\n", rpm, dp->rpm);
+    
+    if (buflen > 2) {
+	type = buffer[6];
+	if (f_debug)
+	    fprintf(stderr, "\tSCSI BLOCKDEV CHAR: type = %u (%s)\n", type, type2str(type));
+
+	if (buflen > 3) {
+	    form = buffer[7] % 0x0F;
+	    dp->form = strdup(form2str(form));
+	    if (f_debug)
+		fprintf(stderr, "\tSCSI BLOCKDEV CHAR: form = %u (%s)\n", form, dp->form);
+	}
+    }
+
+    
+    return 1;
+}
+
+ssize_t
+drive_scsi_blockdev_characteristics(DRIVE *dp) {
+    uint8_t buffer[64];
+    ssize_t res;
+
+    if (f_debug)
+	fprintf(stderr, "    [scsi_blockdev_characteristics]\n");
+    
+    res = drive_scsi_get_vpd_page(dp, SCSI_BLOCKDEV_CHARACTERISTICS_PAGE,
+				  buffer, sizeof(buffer));
+    if (res < 0)
+	return res;
+
+    return drive_scsi_parse_blockdev_characteristics(dp, buffer, res);
+}
+
+
+
 
 int
 drive_scsi_health_status(DRIVE *dp) {
@@ -1337,14 +1660,14 @@ drive_scsi_health_status(DRIVE *dp) {
     struct supported_log_pages pages;
 
 
+    drive_scsi_inquiry(dp);
+
     if (f_debug > 1) {
-	drive_scsi_get_inquiry(dp);
 	drive_scsi_dump_vpd_pages(dp);
     }
     
     memset(&pages, 0, sizeof(pages));
     drive_scsi_supported_log_pages(dp, &pages);
-    
 
     /* Get Drive PowerOnHours */
     if (pages.background_scan && f_hours) {
@@ -1391,6 +1714,14 @@ drive_scsi_health_status(DRIVE *dp) {
 	rc6 = drive_scsi_start_stop_cycle(dp);
     }
 
+    /* Get sector size (and size and stuff) */
+    drive_scsi_read_capacity(dp);
+
+    /* Get rpm */
+    if (1 || pages.blockdev_chars) {
+	drive_scsi_blockdev_characteristics(dp);
+    }
+    
     if (rc1 > 0 || rc2 > 0 || rc3 > 0 || rc4 > 0 || rc5 > 0 || rc6 > 0)
 	return 1;
     

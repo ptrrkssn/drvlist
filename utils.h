@@ -68,6 +68,11 @@ put_be16(uint8_t *p,
 
 
 extern char *
+bsize2str(uint64_t size,
+	  char *buf,
+	  size_t bufsize);
+
+extern char *
 size2str(size_t size);
 
 extern char *
@@ -86,5 +91,11 @@ extern int
 strntrim(char *str,
 	 int *len,
 	 int max);
+
+extern const char *
+rpm2str(uint16_t rpm);
+
+extern const char *
+form2str(uint8_t form);
 
 #endif
